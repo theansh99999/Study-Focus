@@ -6,7 +6,8 @@ class FocusMonitor {
         this.charts = {};
         this.alertSound = null;
         this.updateInterval = null;
-        
+        this.selfViewStream = null;
+
         this.init();
     }
     
@@ -158,6 +159,13 @@ class FocusMonitor {
                     '<i class="fas fa-video me-2"></i>Monitoring active...';
                 document.getElementById('monitoringStatus').className = 'alert alert-success monitoring-active';
 
+                // Show video feed
+                document.getElementById('videoFeed').style.display = 'block';
+                document.getElementById('feedStatus').textContent = 'Live camera feed active';
+
+                // Start self-view camera
+                await this.startSelfView();
+
                 this.startPendingEventPolling();
                 this.showAlert('Monitoring started!', 'success');
             } else {
@@ -180,6 +188,13 @@ class FocusMonitor {
                 document.getElementById('monitoringStatus').innerHTML =
                     '<i class="fas fa-info-circle me-2"></i>Ready to start';
                 document.getElementById('monitoringStatus').className = 'alert alert-info';
+
+                // Hide video feed
+                document.getElementById('videoFeed').style.display = 'none';
+                document.getElementById('feedStatus').textContent = 'Feed will appear when monitoring starts';
+
+                // Stop self-view camera
+                this.stopSelfView();
 
                 this.stopPendingEventPolling();
                 this.showAlert('Monitoring stopped!', 'info');
@@ -474,6 +489,40 @@ class FocusMonitor {
         }
     }
     
+    async startSelfView() {
+        try {
+            // Request access to user's camera (front-facing)
+            this.selfViewStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'user' },
+                audio: false
+            });
+
+            const selfViewElement = document.getElementById('selfView');
+            selfViewElement.srcObject = this.selfViewStream;
+            selfViewElement.style.display = 'block';
+
+            console.log('Self-view camera started');
+        } catch (error) {
+            console.error('Error accessing self-view camera:', error);
+            this.showAlert('Could not access front camera for self-view', 'warning');
+        }
+    }
+
+    stopSelfView() {
+        if (this.selfViewStream) {
+            // Stop all tracks
+            this.selfViewStream.getTracks().forEach(track => track.stop());
+            this.selfViewStream = null;
+
+            // Hide the video element
+            const selfViewElement = document.getElementById('selfView');
+            selfViewElement.srcObject = null;
+            selfViewElement.style.display = 'none';
+
+            console.log('Self-view camera stopped');
+        }
+    }
+
     showAlert(message, type) {
         // Create and show Bootstrap alert
         const alertDiv = document.createElement('div');

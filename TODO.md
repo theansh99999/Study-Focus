@@ -16,6 +16,11 @@
 - [x] Added startPendingEventPolling method to poll for server-detected events every 2 seconds
 - [x] Added stopPendingEventPolling method to stop polling when monitoring stops
 - [x] Events are logged with client timestamps and alerts are triggered
+- [x] Added selfViewStream property to constructor for camera management
+- [x] Added startSelfView method to access front-facing camera for PIP view
+- [x] Added stopSelfView method to stop camera and hide video element
+- [x] Modified startMonitoring to call startSelfView when monitoring begins
+- [x] Modified stopMonitoring to call stopSelfView when monitoring ends
 
 ### Backend (app.py)
 - [x] Verified existing endpoints:
@@ -32,9 +37,16 @@
 4. User stops monitoring → Polling stops, session ends with calculated durations
 5. Dashboard updates every 5 seconds with latest data
 
+## Additional Changes Made
+- [x] Added global variables `latest_frame` and `frame_lock` for video streaming
+- [x] Updated `monitor_user` function to store latest frame for streaming
+- [x] Lowered phone detection confidence threshold from 0.65 to 0.3 for better detection
+- [x] Added `/video_feed` route for MJPEG video streaming
+
 ## Testing
 - Start the app and login
 - Start monitoring - should see session start and polling begin
 - Trigger distractions (close eyes, show phone) - should see alerts and events logged
 - Stop monitoring - should see session end and data update
 - Check dashboard charts and stats update properly
+- Video feed should be available at `/video_feed` for live camera stream

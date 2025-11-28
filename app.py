@@ -112,9 +112,11 @@ current_user = None
 camera = None
 monitoring_thread = None
 camera_lock = threading.Lock()
+latest_frame = None
+frame_lock = threading.Lock()
 
 # Phone detection persistence config
-PHONE_CONF_THRESHOLD = 0.65   # YOLO confidence threshold
+PHONE_CONF_THRESHOLD = 0.3   # YOLO confidence threshold (lowered for better detection)
 MIN_PHONE_FRAMES = 4         # consecutive frames required to confirm phone
 MIN_PHONE_AREA = 1500        # minimum bbox area to consider (tune to camera/resolution)
 PHONE_ALERT_COOLDOWN = 5.0   # seconds between phone event logs
@@ -269,6 +271,9 @@ def monitor_user():
                 continue
 
             frame = cv2.flip(frame, 1)
+            # Store latest frame for streaming
+            with frame_lock:
+                latest_frame = frame.copy()
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             current_time = time.time()
 
@@ -585,6 +590,21 @@ def comparison_data():
     # sort by focus_percentage desc
     comparison = sorted(comparison, key=lambda x: x['focus_percentage'], reverse=True)
     return jsonify(comparison)
+
+@app.route('/video_feed')
+def video_feed():
+    """MJPEG video feed for live camera stream."""
+    def generate():
+        while True:
+            with frame_lock:
+                if latest_frame is not None:
+                    # Encode frame as JPEG
+                    ret, jpeg = cv2.imencode('.jpg', latest_frame)
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+            time.sleep(0.1)  # ~10 FPS
+    return app.response_class(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 # ----------------- Clean app exit -----------------
 def cleanup_on_exit():
