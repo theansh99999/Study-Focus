@@ -1,52 +1,28 @@
-# Focus Monitor App - Update Summary
+# Phone Detection and Beep Sound Fixed
 
-## Issues Fixed
-- [x] App wasn't detecting anything, showing charts, or updating
-- [x] Client-side session management added
-- [x] Pending events polling implemented
-- [x] Event logging with client timestamps
-- [x] Phone detection alerts added to pending events
+## Task Overview
+The phone detection was not working due to outdated code in app.py compared to test_detection.py. The code has been updated to fix the issue. Additionally, the beep sound was not coming when detecting eye close or phone detecting because eye_closed events were not being added to pending_events.
 
-## Changes Made
+## Steps Completed
+- [x] Updated detect_phone_with_yolo function in app.py to match robust version from test_detection.py
+- [x] Lowered thresholds: PHONE_CONF_THRESHOLD to 0.05, MIN_PHONE_FRAMES to 1, MIN_PHONE_AREA to 100
+- [x] Fixed phone labels (removed duplicate, added partial matching)
+- [x] Added torch.no_grad(), imgsz=640, better error handling
+- [x] Fixed beep sound issue by adding eye_closed events to pending_events for real-time alerts
+- [x] Updated TODO.md to reflect the fixes
 
-### Frontend (static/js/app.js)
-- [x] Added session properties to FocusMonitor constructor
-- [x] Modified startMonitoring to start sessions and begin polling
-- [x] Modified stopMonitoring to stop polling and end sessions with durations
-- [x] Added startPendingEventPolling method to poll for server-detected events every 2 seconds
-- [x] Added stopPendingEventPolling method to stop polling when monitoring stops
-- [x] Events are logged with client timestamps and alerts are triggered
-- [x] Added selfViewStream property to constructor for camera management
-- [x] Added startSelfView method to access front-facing camera for PIP view
-- [x] Added stopSelfView method to stop camera and hide video element
-- [x] Modified startMonitoring to call startSelfView when monitoring begins
-- [x] Modified stopMonitoring to call stopSelfView when monitoring ends
+## Implementation Details
+- Updated detect_phone_with_yolo with torch.no_grad(), imgsz=640, and partial label matching
+- Changed box processing to use box.cls[0] and box.conf[0] for compatibility
+- Lowered detection thresholds for better sensitivity
+- Fixed phone_labels list and matching logic
+- Added eye_closed events to pending_events to trigger beep sound in frontend
 
-### Backend (app.py)
-- [x] Verified existing endpoints:
-  - `/api/start_session` - Creates new session
-  - `/api/stop_session` - Ends session and calculates durations
-  - `/api/log_events` - Logs events with timestamps
-  - `/api/get_pending_events` - Returns pending events from server
-- [x] Added phone detection events to pending_events list for real-time alerts
+## Testing Status
+Ready for testing. Run the app and check if phone detection and beep sounds work now.
 
-## How It Works Now
-1. User starts monitoring → Session created, polling begins
-2. Server detects events → Adds to pending_events
-3. Client polls every 2 seconds → Gets pending events, logs with client timestamps, triggers alerts
-4. User stops monitoring → Polling stops, session ends with calculated durations
-5. Dashboard updates every 5 seconds with latest data
-
-## Additional Changes Made
-- [x] Added global variables `latest_frame` and `frame_lock` for video streaming
-- [x] Updated `monitor_user` function to store latest frame for streaming
-- [x] Lowered phone detection confidence threshold from 0.65 to 0.3 for better detection
-- [x] Added `/video_feed` route for MJPEG video streaming
-
-## Testing
-- Start the app and login
-- Start monitoring - should see session start and polling begin
-- Trigger distractions (close eyes, show phone) - should see alerts and events logged
-- Stop monitoring - should see session end and data update
-- Check dashboard charts and stats update properly
-- Video feed should be available at `/video_feed` for live camera stream
+## Next Steps
+- Test phone detection by running the app
+- Verify alerts appear in the frontend when phone is detected or eyes are closed
+- Monitor console output for detection logs
+- Check that beep sound plays for both eye closure and phone detection

@@ -114,11 +114,15 @@ monitoring_thread = None
 camera_lock = threading.Lock()
 latest_frame = None
 frame_lock = threading.Lock()
+pending_events = []
+
+# Thread-safe access to pending_events
+pending_events_lock = threading.Lock()
 
 # Phone detection persistence config
-PHONE_CONF_THRESHOLD = 0.3   # YOLO confidence threshold (lowered for better detection)
-MIN_PHONE_FRAMES = 4         # consecutive frames required to confirm phone
-MIN_PHONE_AREA = 1500        # minimum bbox area to consider (tune to camera/resolution)
+PHONE_CONF_THRESHOLD = 0.05  # YOLO confidence threshold (lowered for better detection)
+MIN_PHONE_FRAMES = 1         # consecutive frames required to confirm phone (lowered for better detection)
+MIN_PHONE_AREA = 100         # minimum bbox area to consider (lowered for better detection)
 PHONE_ALERT_COOLDOWN = 5.0   # seconds between phone event logs
 
 # EAR / eye-closure config
@@ -157,81 +161,52 @@ def calculate_ear(landmarks, frame_shape):
     rightEAR = eye_aspect_ratio(RIGHT_EYE)
     return (leftEAR + rightEAR) / 2.0
 
-
 def detect_phone_with_yolo(frame):
     """
-    Use YOLO to detect phones. Returns (bool, bbox, conf). bbox = (x,y,w,h) or None
-    If YOLO isn't loaded, this will safely return (False, None, 0.0).
+    Use YOLO to detect phones. Returns (True/False, bbox) where bbox=(x,y,w,h)
+    Implement confidence threshold, area threshold and return first matching bbox.
     """
-    global yolo_model
-    if yolo_model is None:
-        return False, None, 0.0
+    # ultralytics supports both predict and direct call; here we use predict-like API
+    # run inference (single image). Use larger imgsz for accuracy if you can.
+    results = yolo_model.predict(frame, imgsz=640, conf=PHONE_CONF_THRESHOLD, verbose=False)
 
-    try:
-        # ultralytics supports passing numpy frame directly; use no_grad for safety
-        with torch.no_grad():
-            # newer ultralytics returns a Results object; calling predict ensures consistency
-            preds = yolo_model.predict(frame, imgsz=640, conf=PHONE_CONF_THRESHOLD, verbose=False)
-    except Exception:
-        # fallback: try direct call
-        try:
-            with torch.no_grad():
-                preds = yolo_model(frame)
-        except Exception:
-            return False, None, 0.0
+    with open('detection_log.txt', 'a') as f:
+        f.write(f"--- Frame detection ---\n")
 
-    # preds can be a list of Results objects or a single Results; normalize
-    if not preds:
-        return False, None, 0.0
+    for res in results:
+        # each res.boxes contains detected boxes
+        boxes = res.boxes
+        if boxes is None:
+            continue
+        for box in boxes:
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+            # In COCO, 'cell phone' class id is usually 67; but use model.names for safety
+            label = yolo_model.names.get(cls_id, str(cls_id))
+            with open('detection_log.txt', 'a') as f:
+                f.write(f"Detected: {label} (conf: {conf:.3f})\n")
 
-    # iterate over results
-    try:
-        results_iter = preds
-        # If a single Results object, make it iterable
-        if hasattr(preds, 'boxes') and not isinstance(preds, (list, tuple)):
-            results_iter = [preds]
-
-        for res in results_iter:
-            boxes = getattr(res, 'boxes', None)
-            if boxes is None:
-                # newer ultralytics might use res.boxes.xyxy etc. If boxes is empty skip
-                continue
-            # boxes may be a Boxes object iterable; convert to list-like
-            for box in boxes:
-                try:
-                    cls_id = int(box.cls[0])
-                    conf = float(box.conf[0])
-                    label = yolo_model.names.get(cls_id, str(cls_id)) if getattr(yolo_model, 'names', None) else str(cls_id)
-                    if label.lower() in ['cell phone', 'cellphone', 'mobile phone', 'phone', 'cellphone']:
-                        # get xyxy; some APIs expose box.xyxy
-                        xyxy = None
-                        if hasattr(box, 'xyxy'):
-                            xyxy = box.xyxy[0].cpu().numpy().astype(int)
-                        elif hasattr(box, 'xyxyn'):
-                            xyxy = (box.xyxyn[0].cpu().numpy() * np.array([frame.shape[1], frame.shape[0], frame.shape[1], frame.shape[0]])).astype(int)
-                        if xyxy is None:
-                            continue
-                        x1, y1, x2, y2 = xyxy[:4]
-                        w = x2 - x1
-                        h = y2 - y1
-                        area = w * h
-                        if area >= MIN_PHONE_AREA and conf >= PHONE_CONF_THRESHOLD:
-                            return True, (x1, y1, w, h), conf
-                except Exception:
-                    # skip malformed box
-                    continue
-    except Exception:
-        return False, None, 0.0
-
+            if label.lower() in ['cell phone', 'cellphone', 'mobile phone', 'phone', 'cellphone']:
+                xyxy = box.xyxy[0].cpu().numpy().astype(int)
+                x1, y1, x2, y2 = xyxy
+                w = x2 - x1
+                h = y2 - y1
+                area = w * h
+                # filter small boxes and require min confidence (already set by conf arg)
+                if area >= MIN_PHONE_AREA and conf >= PHONE_CONF_THRESHOLD:
+                    with open('detection_log.txt', 'a') as f:
+                        f.write(f"Phone detected: {label}, area: {area}, conf: {conf}\n")
+                    return True, (x1, y1, w, h), conf
     return False, None, 0.0
 
 # ----------------- Monitoring thread -----------------
 def monitor_user():
-    """
+    """""
     Long-running thread: reads camera frames, runs MEDIAPIPE for EAR and YOLO for phone,
     logs events to DB, and updates session durations when monitoring stops.
     """
-    global monitoring_active, current_user, camera
+    global monitoring_active, current_user, camera, latest_frame
+
 
     # require a current_user to exist
     if current_user is None:
@@ -338,6 +313,13 @@ def monitor_user():
                                     db.session.rollback()
                                 last_eye_alert_time = current_time
                                 print(f"[ALERT] eye_closed logged: {duration:.2f}s")
+                                # Add to pending events for real-time alerts
+                                with pending_events_lock:
+                                    pending_events.append({
+                                        'type': 'eye_closed',
+                                        'timestamp': datetime.utcnow().isoformat(),
+                                        'duration': duration
+                                    })
                     else:
                         eye_closed_start = None
 
@@ -369,6 +351,13 @@ def monitor_user():
                     last_phone_alert_time = current_time
                     phone_event_start = current_time
                     print(f"[ALERT] phone_detected logged: {duration:.2f}s (conf {phone_conf:.2f})")
+                    # Add to pending events for real-time alerts
+                    with pending_events_lock:
+                        pending_events.append({
+                            'type': 'phone_detected',
+                            'timestamp': datetime.utcnow().isoformat(),
+                            'duration': duration
+                        })
 
             # light throttle to reduce CPU usage
             time.sleep(0.07)
@@ -470,8 +459,22 @@ def dashboard_data():
         Event.timestamp <= today_end
     ).order_by(Event.timestamp.desc()).limit(10).all()
 
-    total_focus_time = sum(s.focus_duration for s in sessions)
-    total_distraction_time = sum(s.distraction_duration for s in sessions)
+    total_focus_time = 0
+    total_distraction_time = 0
+    for s in sessions:
+        if s.is_active:
+            # Calculate real-time data for active session
+            now = datetime.utcnow()
+            session_duration = (now - s.start_time).total_seconds()
+            session_events = Event.query.filter_by(session_id=s.id).all()
+            session_distraction = sum(e.duration for e in session_events)
+            session_focus = max(0, session_duration - session_distraction)
+            total_focus_time += session_focus
+            total_distraction_time += session_distraction
+        else:
+            total_focus_time += s.focus_duration
+            total_distraction_time += s.distraction_duration
+
     eye_closed_events = len([e for e in events if e.event_type == 'eye_closed'])
     phone_detected_events = len([e for e in events if e.event_type == 'phone_detected'])
     goal_progress = min(100, (total_focus_time / 60) / (current_user.daily_goal_minutes + 1e-9) * 100)
@@ -570,6 +573,14 @@ def export_data(format):
 
     else:
         return jsonify({'error': 'Invalid format'}), 400
+
+@app.route('/api/get_pending_events', methods=['GET'])
+def get_pending_events():
+    global pending_events, pending_events_lock
+    with pending_events_lock:
+        events = pending_events.copy()
+        pending_events.clear()
+    return jsonify(events)
 
 @app.route('/api/comparison_data')
 def comparison_data():
