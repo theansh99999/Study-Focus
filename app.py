@@ -34,7 +34,7 @@ db = SQLAlchemy(app)
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.now)
     daily_goal_minutes = db.Column(db.Integer, default=120)
     eye_closure_threshold = db.Column(db.Float, default=3.0)  # seconds
     sessions = db.relationship('Session', backref='user', lazy=True)
@@ -43,7 +43,7 @@ class User(db.Model):
 class Session(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    start_time = db.Column(db.DateTime, default=datetime.utcnow)
+    start_time = db.Column(db.DateTime, default=datetime.now)
     end_time = db.Column(db.DateTime)
     total_duration = db.Column(db.Integer, default=0)  # seconds
     focus_duration = db.Column(db.Integer, default=0)  # seconds
@@ -54,7 +54,7 @@ class Event(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     session_id = db.Column(db.Integer, db.ForeignKey('session.id'), nullable=False)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=datetime.now)
     event_type = db.Column(db.String(50), nullable=False)  # 'eye_closed','phone_detected', etc.
     duration = db.Column(db.Float, default=0.0)  # seconds
 
@@ -317,7 +317,7 @@ def monitor_user():
                                 with pending_events_lock:
                                     pending_events.append({
                                         'type': 'eye_closed',
-                                        'timestamp': datetime.utcnow().isoformat(),
+                                        'timestamp': datetime.now().isoformat(),
                                         'duration': duration
                                     })
                     else:
@@ -355,7 +355,7 @@ def monitor_user():
                     with pending_events_lock:
                         pending_events.append({
                             'type': 'phone_detected',
-                            'timestamp': datetime.utcnow().isoformat(),
+                            'timestamp': datetime.now().isoformat(),
                             'duration': duration
                         })
 
@@ -366,7 +366,7 @@ def monitor_user():
         try:
             session = Session.query.filter_by(id=session.id).first()
             if session and session.is_active:
-                session.end_time = datetime.utcnow()
+                session.end_time = datetime.now()
                 session.is_active = False
                 total_duration = (session.end_time - session.start_time).total_seconds()
                 session.total_duration = int(total_duration)
@@ -464,7 +464,7 @@ def dashboard_data():
     for s in sessions:
         if s.is_active:
             # Calculate real-time data for active session
-            now = datetime.utcnow()
+            now = datetime.now()
             session_duration = (now - s.start_time).total_seconds()
             session_events = Event.query.filter_by(session_id=s.id).all()
             session_distraction = sum(e.duration for e in session_events)
