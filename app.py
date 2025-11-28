@@ -1,4 +1,12 @@
-# app.py (Full-featured: YOLO phone detection + MediaPipe EAR eye-closure + Flask dashboard/export)
+# app_fixed.py (Fixed and hardened version of your original app.py)
+# Features/fixes applied:
+# - Handles PyTorch 2.6 "weights_only" safe globals issue by allowlisting ultralytics DetectionModel
+# - Graceful fallback if YOLO model fails to load (app still runs)
+# - Robust YOLO predict wrapper that supports different ultralytics return shapes
+# - Defensive camera handling and clearer threading shutdown
+# - Minor performance tweaks (torch.no_grad when doing inference)
+# - Keeps your original functionality (MediaPipe EAR, DB, Flask routes, exports)
+
 from flask import Flask, render_template, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
@@ -13,6 +21,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from ultralytics import YOLO
 import os
+import torch
 
 # ----------------- Flask + DB setup -----------------
 app = Flask(__name__)
@@ -52,12 +61,43 @@ class Event(db.Model):
 with app.app_context():
     db.create_all()
 
-# ----------------- Detection models setup -----------------
+# ----------------- Detection models setup & PyTorch safe globals patch -----------------
 # YOLO model (lightweight). Replace with your custom path if needed.
 YOLO_MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'yolov8n.pt')
-yolo_model = YOLO(YOLO_MODEL_PATH)
 
-# Mediapipe FaceMesh for EAR
+def safe_allow_ultralytics():
+    """Allowlist ultralytics DetectionModel for torch.load when weights_only restrictions exist.
+    This prevents the pickle.UnpicklingError raised by PyTorch 2.6+ when loading checkpoints that
+    serialize model classes.
+    """
+    try:
+        # ultralytics defines DetectionModel in ultralytics.nn.tasks
+        from ultralytics.nn.tasks import DetectionModel
+        # add to torch safe globals (no-op on older torch versions)
+        if hasattr(torch.serialization, 'add_safe_globals'):
+            torch.serialization.add_safe_globals([DetectionModel])
+        elif hasattr(torch.serialization, 'safe_globals'):
+            # older/newer variants might expose a different API
+            torch.serialization.safe_globals([DetectionModel])
+    except Exception:
+        # don't crash the app if import fails; the YOLO load will handle exceptions later
+        pass
+
+safe_allow_ultralytics()
+
+# Attempt to load YOLO model but be robust if it fails
+yolo_model = None
+try:
+    # load model inside try/except. Some ultralytics versions accept a path string.
+    print(f"[Startup] Loading YOLO model from: {YOLO_MODEL_PATH}")
+    yolo_model = YOLO(YOLO_MODEL_PATH)
+    print("[Startup] YOLO model loaded successfully")
+except Exception as e:
+    yolo_model = None
+    print("[Startup] Warning: failed to load YOLO model:", str(e))
+    print("[Startup] Continuing without YOLO — phone detection will be disabled until model can be loaded")
+
+# ----------------- Mediapipe FaceMesh for EAR -----------------
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(
     max_num_faces=4,
@@ -115,34 +155,72 @@ def calculate_ear(landmarks, frame_shape):
     rightEAR = eye_aspect_ratio(RIGHT_EYE)
     return (leftEAR + rightEAR) / 2.0
 
+
 def detect_phone_with_yolo(frame):
     """
-    Use YOLO to detect phones. Returns (True/False, bbox) where bbox=(x,y,w,h)
-    Implement confidence threshold, area threshold and return first matching bbox.
+    Use YOLO to detect phones. Returns (bool, bbox, conf). bbox = (x,y,w,h) or None
+    If YOLO isn't loaded, this will safely return (False, None, 0.0).
     """
-    # ultralytics supports both predict and direct call; here we use predict-like API
-    # run inference (single image). Use larger imgsz for accuracy if you can.
-    results = yolo_model.predict(frame, imgsz=640, conf=PHONE_CONF_THRESHOLD, verbose=False)
+    global yolo_model
+    if yolo_model is None:
+        return False, None, 0.0
 
-    for res in results:
-        # each res.boxes contains detected boxes
-        boxes = res.boxes
-        if boxes is None:
-            continue
-        for box in boxes:
-            cls_id = int(box.cls[0])
-            conf = float(box.conf[0])
-            # In COCO, 'cell phone' class id is usually 67; but use model.names for safety
-            label = yolo_model.names.get(cls_id, str(cls_id))
-            if label.lower() in ['cell phone', 'cellphone', 'mobile phone', 'phone', 'cellphone']:
-                xyxy = box.xyxy[0].cpu().numpy().astype(int)
-                x1, y1, x2, y2 = xyxy
-                w = x2 - x1
-                h = y2 - y1
-                area = w * h
-                # filter small boxes and require min confidence (already set by conf arg)
-                if area >= MIN_PHONE_AREA and conf >= PHONE_CONF_THRESHOLD:
-                    return True, (x1, y1, w, h), conf
+    try:
+        # ultralytics supports passing numpy frame directly; use no_grad for safety
+        with torch.no_grad():
+            # newer ultralytics returns a Results object; calling predict ensures consistency
+            preds = yolo_model.predict(frame, imgsz=640, conf=PHONE_CONF_THRESHOLD, verbose=False)
+    except Exception:
+        # fallback: try direct call
+        try:
+            with torch.no_grad():
+                preds = yolo_model(frame)
+        except Exception:
+            return False, None, 0.0
+
+    # preds can be a list of Results objects or a single Results; normalize
+    if not preds:
+        return False, None, 0.0
+
+    # iterate over results
+    try:
+        results_iter = preds
+        # If a single Results object, make it iterable
+        if hasattr(preds, 'boxes') and not isinstance(preds, (list, tuple)):
+            results_iter = [preds]
+
+        for res in results_iter:
+            boxes = getattr(res, 'boxes', None)
+            if boxes is None:
+                # newer ultralytics might use res.boxes.xyxy etc. If boxes is empty skip
+                continue
+            # boxes may be a Boxes object iterable; convert to list-like
+            for box in boxes:
+                try:
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    label = yolo_model.names.get(cls_id, str(cls_id)) if getattr(yolo_model, 'names', None) else str(cls_id)
+                    if label.lower() in ['cell phone', 'cellphone', 'mobile phone', 'phone', 'cellphone']:
+                        # get xyxy; some APIs expose box.xyxy
+                        xyxy = None
+                        if hasattr(box, 'xyxy'):
+                            xyxy = box.xyxy[0].cpu().numpy().astype(int)
+                        elif hasattr(box, 'xyxyn'):
+                            xyxy = (box.xyxyn[0].cpu().numpy() * np.array([frame.shape[1], frame.shape[0], frame.shape[1], frame.shape[0]])).astype(int)
+                        if xyxy is None:
+                            continue
+                        x1, y1, x2, y2 = xyxy[:4]
+                        w = x2 - x1
+                        h = y2 - y1
+                        area = w * h
+                        if area >= MIN_PHONE_AREA and conf >= PHONE_CONF_THRESHOLD:
+                            return True, (x1, y1, w, h), conf
+                except Exception:
+                    # skip malformed box
+                    continue
+    except Exception:
+        return False, None, 0.0
+
     return False, None, 0.0
 
 # ----------------- Monitoring thread -----------------
@@ -152,6 +230,11 @@ def monitor_user():
     logs events to DB, and updates session durations when monitoring stops.
     """
     global monitoring_active, current_user, camera
+
+    # require a current_user to exist
+    if current_user is None:
+        print('[monitor_user] No current user; exiting thread')
+        return
 
     with app.app_context():
         # session management
@@ -178,6 +261,8 @@ def monitor_user():
 
         while monitoring_active and camera is not None:
             with camera_lock:
+                if camera is None:
+                    break
                 ret, frame = camera.read()
             if not ret or frame is None:
                 time.sleep(0.05)
@@ -199,7 +284,6 @@ def monitor_user():
                 chosen_landmarks = None
                 max_area = 0
                 for face_landmarks in results.multi_face_landmarks:
-                    # compute bbox from landmarks
                     xs = [lm.x for lm in face_landmarks.landmark]
                     ys = [lm.y for lm in face_landmarks.landmark]
                     min_x, max_x = min(xs), max(xs)
@@ -221,7 +305,6 @@ def monitor_user():
                                 baseline_ear = float(np.median(baseline_vals))
                             else:
                                 baseline_ear = 0.25  # fallback
-                            # debug print
                             print(f"[Baseline EAR] set to {baseline_ear:.3f}")
                     # smoothing
                     ear_history.append(ear)
@@ -241,17 +324,24 @@ def monitor_user():
                             # cooldown check
                             if current_time - last_eye_alert_time >= EYE_ALERT_COOLDOWN:
                                 duration = current_time - eye_closed_start
-                                ev = Event(user_id=current_user.id, session_id=session.id,
-                                           event_type='eye_closed', duration=duration)
-                                db.session.add(ev)
-                                db.session.commit()
+                                try:
+                                    ev = Event(user_id=current_user.id, session_id=session.id,
+                                               event_type='eye_closed', duration=duration)
+                                    db.session.add(ev)
+                                    db.session.commit()
+                                except Exception as e:
+                                    db.session.rollback()
                                 last_eye_alert_time = current_time
                                 print(f"[ALERT] eye_closed logged: {duration:.2f}s")
                     else:
                         eye_closed_start = None
 
             # ----- Phone detection (YOLO) -----
-            phone_detected, phone_rect, phone_conf = detect_phone_with_yolo(frame)
+            try:
+                phone_detected, phone_rect, phone_conf = detect_phone_with_yolo(frame)
+            except Exception:
+                phone_detected, phone_rect, phone_conf = False, None, 0.0
+
             if phone_detected:
                 phone_detected_frames += 1
             else:
@@ -264,30 +354,35 @@ def monitor_user():
                 # cooldown check
                 if (current_time - last_phone_alert_time) >= PHONE_ALERT_COOLDOWN:
                     duration = current_time - phone_event_start
-                    ev = Event(user_id=current_user.id, session_id=session.id,
-                               event_type='phone_detected', duration=duration)
-                    db.session.add(ev)
-                    db.session.commit()
+                    try:
+                        ev = Event(user_id=current_user.id, session_id=session.id,
+                                   event_type='phone_detected', duration=duration)
+                        db.session.add(ev)
+                        db.session.commit()
+                    except Exception:
+                        db.session.rollback()
                     last_phone_alert_time = current_time
                     phone_event_start = current_time
                     print(f"[ALERT] phone_detected logged: {duration:.2f}s (conf {phone_conf:.2f})")
 
-            # optional: draw bounding boxes for debugging (not necessary here)
-            # time-sleep to reduce CPU usage
+            # light throttle to reduce CPU usage
             time.sleep(0.07)
 
         # when monitoring stops: update session end and durations
-        session = Session.query.filter_by(id=session.id).first()
-        if session and session.is_active:
-            session.end_time = datetime.utcnow()
-            session.is_active = False
-            total_duration = (session.end_time - session.start_time).total_seconds()
-            session.total_duration = int(total_duration)
-            events = Event.query.filter_by(session_id=session.id).all()
-            distraction_duration = sum(e.duration for e in events)
-            session.distraction_duration = int(distraction_duration)
-            session.focus_duration = max(0, session.total_duration - session.distraction_duration)
-            db.session.commit()
+        try:
+            session = Session.query.filter_by(id=session.id).first()
+            if session and session.is_active:
+                session.end_time = datetime.utcnow()
+                session.is_active = False
+                total_duration = (session.end_time - session.start_time).total_seconds()
+                session.total_duration = int(total_duration)
+                events = Event.query.filter_by(session_id=session.id).all()
+                distraction_duration = sum(e.duration for e in events)
+                session.distraction_duration = int(distraction_duration)
+                session.focus_duration = max(0, session.total_duration - session.distraction_duration)
+                db.session.commit()
+        except Exception:
+            db.session.rollback()
 
 # ----------------- Routes (API) -----------------
 @app.route('/')
@@ -323,8 +418,9 @@ def start_monitoring():
         return jsonify({'error': 'Monitoring already active'}), 400
     try:
         # init camera
-        cam = cv2.VideoCapture(0)
+        cam = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # CAP_DSHOW helps on some Windows setups
         if not cam.isOpened():
+            cam.release()
             return jsonify({'error': 'Cannot access camera'}), 500
         camera = cam
         monitoring_active = True
@@ -341,7 +437,10 @@ def stop_monitoring():
     # release camera safely
     with camera_lock:
         if camera:
-            camera.release()
+            try:
+                camera.release()
+            except Exception:
+                pass
             camera = None
     # session end handled inside monitor_user when thread exits
     return jsonify({'success': True})
@@ -492,7 +591,10 @@ def cleanup_on_exit():
     global camera
     with camera_lock:
         if camera:
-            camera.release()
+            try:
+                camera.release()
+            except Exception:
+                pass
             camera = None
 
 import atexit
@@ -500,6 +602,6 @@ atexit.register(cleanup_on_exit)
 
 # ----------------- Run app -----------------
 if __name__ == '__main__':
-    # Ensure model is loaded at start to avoid runtime lag
-    print("[Startup] Loaded YOLO model:", YOLO_MODEL_PATH)
+    # Ensure model is attempted to load at start (already attempted above)
+    print("[Startup] Finished initialization. Starting Flask app.")
     app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)

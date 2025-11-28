@@ -149,15 +149,16 @@ class FocusMonitor {
         try {
             const response = await fetch('/api/start_monitoring', { method: 'POST' });
             const data = await response.json();
-            
+
             if (data.success) {
                 this.monitoringActive = true;
                 document.getElementById('startBtn').style.display = 'none';
                 document.getElementById('stopBtn').style.display = 'block';
-                document.getElementById('monitoringStatus').innerHTML = 
+                document.getElementById('monitoringStatus').innerHTML =
                     '<i class="fas fa-video me-2"></i>Monitoring active...';
                 document.getElementById('monitoringStatus').className = 'alert alert-success monitoring-active';
-                
+
+                this.startPendingEventPolling();
                 this.showAlert('Monitoring started!', 'success');
             } else {
                 this.showAlert(data.error || 'Failed to start monitoring', 'danger');
@@ -171,15 +172,16 @@ class FocusMonitor {
         try {
             const response = await fetch('/api/stop_monitoring', { method: 'POST' });
             const data = await response.json();
-            
+
             if (data.success) {
                 this.monitoringActive = false;
                 document.getElementById('startBtn').style.display = 'block';
                 document.getElementById('stopBtn').style.display = 'none';
-                document.getElementById('monitoringStatus').innerHTML = 
+                document.getElementById('monitoringStatus').innerHTML =
                     '<i class="fas fa-info-circle me-2"></i>Ready to start';
                 document.getElementById('monitoringStatus').className = 'alert alert-info';
-                
+
+                this.stopPendingEventPolling();
                 this.showAlert('Monitoring stopped!', 'info');
                 await this.loadDashboardData(); // Refresh data
             }
@@ -400,29 +402,50 @@ class FocusMonitor {
         // Create a simple beep sound using Web Audio API
         try {
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            
+
             this.alertSound = {
                 play: () => {
                     const oscillator = audioContext.createOscillator();
                     const gainNode = audioContext.createGain();
-                    
+
                     oscillator.connect(gainNode);
                     gainNode.connect(audioContext.destination);
-                    
+
                     oscillator.frequency.value = 800;
                     oscillator.type = 'sine';
-                    
+
                     gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
                     gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
-                    
+
                     oscillator.start(audioContext.currentTime);
                     oscillator.stop(audioContext.currentTime + 0.5);
-                    
+
                     return Promise.resolve();
                 }
             };
         } catch (error) {
             console.log('Web Audio API not supported');
+        }
+    }
+
+    startPendingEventPolling() {
+        this.pendingEventInterval = setInterval(async () => {
+            try {
+                const response = await fetch('/api/get_pending_events');
+                const events = await response.json();
+                events.forEach(event => {
+                    this.triggerAlert(event.type);
+                });
+            } catch (error) {
+                console.error('Failed to fetch pending events:', error);
+            }
+        }, 2000);
+    }
+
+    stopPendingEventPolling() {
+        if (this.pendingEventInterval) {
+            clearInterval(this.pendingEventInterval);
+            this.pendingEventInterval = null;
         }
     }
     

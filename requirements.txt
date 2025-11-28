@@ -8,3 +8,4 @@ matplotlib==3.8.4
 seaborn==0.13.2
 reportlab==4.2.2
 Pillow==10.4.0
+ultralytics==8.0.196
