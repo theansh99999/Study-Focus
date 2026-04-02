@@ -21,7 +21,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.secret_key = 'change-this-secret'
 db = SQLAlchemy(app)
 
-# ----------------- Database models -----------------
+# ----------------- Database models ----------------
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)

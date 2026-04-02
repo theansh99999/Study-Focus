@@ -6,3 +6,8 @@ instance/
 *.log
 *.pt
 .env
+.dockerignore
+Dockerfile
+docker-compose.yml
+test_yolo.py
+yolov8n.pt
