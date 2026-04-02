@@ -2,7 +2,7 @@
 
 A comprehensive Flask-based application that monitors your productivity and focus using **Computer Vision (OpenCV + Mediapipe + YOLO)** to detect distractions like **eye closure** and **phone usage**.
 
-⚠️ **Note:** Multi-person detection is implemented using YOLO, but currently under bug fixing (work in progress).
+⚠️ **Note:** Some features are currently under active development including multi-person detection, improved UI, and advanced phone detection optimizations.
 
 ---
 
@@ -14,33 +14,43 @@ A comprehensive Flask-based application that monitors your productivity and focu
 - Data reset functionality for existing users
 
 ### 👁️ Core Monitoring (OpenCV + Mediapipe + YOLO)
-- **Eye Closure Detection** → Alerts when eyes remain closed for more than 3 seconds  
-- **Phone Detection** → Alerts when a phone is detected in the camera frame  
-- **Multi-person Support** → Detects events for anyone in the camera view *(currently fixing bug)*  
-- **Real-time Event Logging** → Records all events with timestamps and user info  
+- **Eye Closure Detection** → Alerts when eyes remain closed for more than a threshold  
+- **Phone Detection** → Detects phone usage in real-time *(currently being improved)*  
+- **Multi-person Detection** → Detects multiple people in frame *(under development)*  
+- **Real-time Event Logging** → Records all events with timestamps and user info
 
+### 🔐 User Management
+- Username-based login  
+- **User Registration system (in progress)**  
+- Automatic user profile creation  
+- Data reset functionality  
 ### 📊 Distraction Categories
 - Eye Closed Too Long 👀 (Drowsiness & fatigue)
 - Phone Usage 📱 (Mobile distractions)
 - Category-wise statistics & breakdown in dashboard  
 
 ### 🎨 UI/UX Features
-- Dark/Light mode toggle (manual + auto system detection)
+- Improved modern dashboard UI *(currently being enhanced)*  
+- Dark/Light mode toggle  
 - Real-time dashboard with live alerts  
-- Interactive charts (Line, Pie, Progress bar with app.js)  
-- Goal tracking (daily/weekly) with visualization  
-- Export functionality: CSV/Excel & PDF report generation  
-- Responsive design (desktop & laptop friendly)  
+- Interactive charts (Line, Pie, Progress bar)  
+- Goal tracking visualization  
+- Export functionality: CSV & PDF  
+- Responsive design   
 
 ### 🚀 Advanced Features
 - Session tracking with analytics  
 - Multi-user comparison dashboard  
 - Customizable thresholds for eye closure  
 - Dual alerts → Audio beep + Visual popup  
-- Real-time updates (dashboard refreshes every 5s)  
-
+- Real-time updates (dashboard refreshes every 5s)
+## 🚧 Current Enhancements (Work in Progress)
+- UI redesign for a more modern and clean dashboard  
+- Improved phone detection accuracy using YOLO  
+- Multi-person detection stability fixes  
+- User registration & authentication system  
+- Performance optimization for real-time monitoring
 ---
-
 ## 🛠️ Tech Stack
 - **Backend:** Flask (Python)  
 - **Frontend:** HTML5, CSS3, JavaScript, Bootstrap 5  
