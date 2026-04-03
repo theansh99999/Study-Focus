@@ -2,7 +2,7 @@
 
 A comprehensive Flask-based application that monitors your productivity and focus using **Computer Vision (OpenCV + Mediapipe + YOLO)** to detect distractions like **eye closure** and **phone usage**.
 
-⚠️ **Note:** Some features are currently under active development including multi-person detection, improved UI, and advanced phone detection optimizations.
+⚠️ **Note:** Some features are currently under active development including multi-person detection and other advance features.
 
 ---
 
@@ -44,9 +44,9 @@ A comprehensive Flask-based application that monitors your productivity and focu
 - Customizable thresholds for eye closure  
 - Dual alerts → Audio beep + Visual popup  
 - Real-time updates (dashboard refreshes every 5s)
+- Improved phone detection accuracy using YOLO  
 ## 🚧 Current Enhancements (Work in Progress)
 - UI redesign for a more modern and clean dashboard  
-- Improved phone detection accuracy using YOLO  
 - Multi-person detection stability fixes  
 - User registration & authentication system  
 - Performance optimization for real-time monitoring
@@ -168,14 +168,6 @@ focus-monitor/
 - PDF reports include charts and require matplotlib  
 - CSV exports work with any spreadsheet application  
 
-## Future Enhancements
-- **Mobile App**: React Native or Flutter mobile version  
-- **Advanced Detection**: Posture monitoring, looking away detection  
-- **Team Features**: Organization-wide analytics and reporting  
-- **Integration**: Calendar integration, productivity app connections  
-- **AI Insights**: Personalized productivity recommendations  
-- **Cloud Sync**: Multi-device data synchronization  
+
 ## 👨‍💻 Created By
 **Ansh Kumar Rai**
-## Deploy link##
-**https://study-focus-wrwe.onrender.com**
