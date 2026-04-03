@@ -1,5 +1,5 @@
 # app.py (Full-featured: YOLO phone detection + MediaPipe EAR eye-closure + Flask dashboard/export)
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, Response
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
 import threading
@@ -72,6 +72,8 @@ current_user = None
 camera = None
 monitoring_thread = None
 camera_lock = threading.Lock()
+latest_processed_frame = None  # Holds the latest JPEG byte array for streaming
+current_alert_state = {'eye_closed': False, 'phone_detected': False}
 
 # Phone detection persistence config
 PHONE_CONF_THRESHOLD = 0.65   # YOLO confidence threshold
@@ -238,7 +240,9 @@ def monitor_user():
                         if eye_closed_start is None:
                             eye_closed_start = current_time
                         elif (current_time - eye_closed_start) >= current_user.eye_closure_threshold:
-                            # cooldown check
+                            # Mark realtime state actively closed
+                            current_alert_state['eye_closed'] = True
+                            # cooldown check (to avoid spamming DB)
                             if current_time - last_eye_alert_time >= EYE_ALERT_COOLDOWN:
                                 duration = current_time - eye_closed_start
                                 ev = Event(user_id=current_user.id, session_id=session.id,
@@ -249,6 +253,7 @@ def monitor_user():
                                 print(f"[ALERT] eye_closed logged: {duration:.2f}s")
                     else:
                         eye_closed_start = None
+                        current_alert_state['eye_closed'] = False
 
             # ----- Phone detection (YOLO) -----
             phone_detected, phone_rect, phone_conf = detect_phone_with_yolo(frame)
@@ -259,6 +264,7 @@ def monitor_user():
                 phone_event_start = None
 
             if phone_detected_frames >= MIN_PHONE_FRAMES:
+                current_alert_state['phone_detected'] = True
                 if phone_event_start is None:
                     phone_event_start = current_time
                 # cooldown check
@@ -271,8 +277,23 @@ def monitor_user():
                     last_phone_alert_time = current_time
                     phone_event_start = current_time
                     print(f"[ALERT] phone_detected logged: {duration:.2f}s (conf {phone_conf:.2f})")
+            else:
+                current_alert_state['phone_detected'] = False
 
-            # optional: draw bounding boxes for debugging (not necessary here)
+            # Draw bounding boxes for streaming
+            if phone_detected:
+                x1, y1, w, h = phone_rect
+                cv2.rectangle(frame, (x1, y1), (x1+w, y1+h), (0, 0, 255), 2)
+                cv2.putText(frame, f"Phone", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            if smooth_ear and baseline_ear and smooth_ear < (baseline_ear * EAR_DYNAMIC_MULTIPLIER):
+                cv2.putText(frame, "Eyes Closed", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
+                
+            # Encode frame for stream
+            ret, jpeg = cv2.imencode('.jpg', frame)
+            if ret:
+                global latest_processed_frame
+                latest_processed_frame = jpeg.tobytes()
+
             # time-sleep to reduce CPU usage
             time.sleep(0.07)
 
@@ -288,6 +309,25 @@ def monitor_user():
             session.distraction_duration = int(distraction_duration)
             session.focus_duration = max(0, session.total_duration - session.distraction_duration)
             db.session.commit()
+
+def gen_frames():
+    global latest_processed_frame, monitoring_active
+    while True:
+        if not monitoring_active:
+            break
+        if latest_processed_frame is not None:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + latest_processed_frame + b'\r\n')
+        time.sleep(0.05)
+
+@app.route('/video_feed')
+def video_feed():
+    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/api/status')
+def get_status():
+    global current_alert_state
+    return jsonify(current_alert_state)
 
 # ----------------- Routes (API) -----------------
 @app.route('/')
@@ -313,6 +353,18 @@ def login():
         db.session.commit()
     current_user = user
     return jsonify({'success': True, 'user': {'id': user.id, 'username': user.username}})
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    global current_user, monitoring_active, camera
+    if monitoring_active:
+        monitoring_active = False
+        with camera_lock:
+            if camera:
+                camera.release()
+                camera = None
+    current_user = None
+    return jsonify({'success': True})
 
 @app.route('/api/start_monitoring', methods=['POST'])
 def start_monitoring():
@@ -378,7 +430,7 @@ def dashboard_data():
         'goal_progress': goal_progress,
         'daily_goal': current_user.daily_goal_minutes,
         'recent_events': [{
-            'timestamp': e.timestamp.isoformat(),
+            'timestamp': e.timestamp.isoformat() + 'Z',
             'type': e.event_type,
             'duration': e.duration
         } for e in events],
@@ -395,10 +447,13 @@ def settings():
         return jsonify({'error': 'No user logged in'}), 400
     if request.method == 'POST':
         data = request.json
+        user = User.query.get(current_user.id)
         if 'daily_goal_minutes' in data:
-            current_user.daily_goal_minutes = int(data['daily_goal_minutes'])
+            user.daily_goal_minutes = int(data['daily_goal_minutes'])
+            current_user.daily_goal_minutes = user.daily_goal_minutes
         if 'eye_closure_threshold' in data:
-            current_user.eye_closure_threshold = float(data['eye_closure_threshold'])
+            user.eye_closure_threshold = float(data['eye_closure_threshold'])
+            current_user.eye_closure_threshold = user.eye_closure_threshold
         db.session.commit()
         return jsonify({'success': True})
     return jsonify({
@@ -481,10 +536,11 @@ def comparison_data():
             'username': u.username,
             'focus_time': total_focus,
             'distraction_time': total_distraction,
-            'focus_percentage': focus_percentage
+            'focus_percentage': focus_percentage,
+            'daily_goal_minutes': u.daily_goal_minutes
         })
-    # sort by focus_percentage desc
-    comparison = sorted(comparison, key=lambda x: x['focus_percentage'], reverse=True)
+    # sort by focus_time desc
+    comparison = sorted(comparison, key=lambda x: x['focus_time'], reverse=True)
     return jsonify(comparison)
 
 # ----------------- Clean app exit -----------------

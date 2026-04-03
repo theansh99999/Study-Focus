@@ -6,6 +6,8 @@ class FocusMonitor {
         this.charts = {};
         this.alertSound = null;
         this.updateInterval = null;
+        this.leaderboardPage = 1;
+        this.leaderboardPageSize = 4;
         
         this.init();
     }
@@ -18,8 +20,9 @@ class FocusMonitor {
     }
     
     setupEventListeners() {
-        // Login
+        // Login / Logout
         document.getElementById('loginBtn').addEventListener('click', () => this.login());
+        document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
         document.getElementById('username').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.login();
         });
@@ -90,6 +93,7 @@ class FocusMonitor {
             if (data.success) {
                 this.currentUser = data.user;
                 document.getElementById('currentUser').textContent = username;
+                document.getElementById('logoutBtn').style.display = 'block';
                 
                 // Hide modal and show dashboard
                 bootstrap.Modal.getInstance(document.getElementById('loginModal')).hide();
@@ -107,6 +111,28 @@ class FocusMonitor {
         } catch (error) {
             this.showAlert('Connection error', 'danger');
         }
+    }
+
+    async logout() {
+        if(this.monitoringActive) {
+            await this.stopMonitoring();
+        }
+        
+        try {
+            await fetch('/api/logout', { method: 'POST' });
+        } catch(e) {}
+        
+        this.currentUser = null;
+        if(this.updateInterval) clearInterval(this.updateInterval);
+        if(this.statusInterval) clearInterval(this.statusInterval);
+        if (this.alertSound && this.alertSound.stopAlarm) this.alertSound.stopAlarm();
+        
+        document.getElementById('currentUser').textContent = 'Not logged in';
+        document.getElementById('logoutBtn').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'none';
+        
+        this.showLoginModal();
+        this.showAlert('Logged out successfully', 'info');
     }
     
     async loadSettings() {
@@ -146,6 +172,9 @@ class FocusMonitor {
     }
     
     async startMonitoring() {
+        if (this.alertSound && this.alertSound.ctx && this.alertSound.ctx.state === 'suspended') {
+            this.alertSound.ctx.resume();
+        }
         try {
             const response = await fetch('/api/start_monitoring', { method: 'POST' });
             const data = await response.json();
@@ -157,6 +186,13 @@ class FocusMonitor {
                 document.getElementById('monitoringStatus').innerHTML = 
                     '<i class="fas fa-video me-2"></i>Monitoring active...';
                 document.getElementById('monitoringStatus').className = 'alert alert-success monitoring-active';
+                document.getElementById('liveIndicator').style.display = 'block';
+                
+                // Mount Video Stream
+                const streamImg = document.getElementById('cameraStream');
+                streamImg.src = '/video_feed?' + new Date().getTime();
+                streamImg.style.display = 'block';
+                document.getElementById('cameraPlaceholder').style.display = 'none';
                 
                 this.showAlert('Monitoring started!', 'success');
             } else {
@@ -174,11 +210,24 @@ class FocusMonitor {
             
             if (data.success) {
                 this.monitoringActive = false;
+                
+                // Clear active alarms
+                if (this.alertSound && this.alertSound.stopAlarm) this.alertSound.stopAlarm();
+                document.body.classList.remove('alert-shake');
+                document.body.style.backgroundColor = '';
+                
                 document.getElementById('startBtn').style.display = 'block';
                 document.getElementById('stopBtn').style.display = 'none';
                 document.getElementById('monitoringStatus').innerHTML = 
                     '<i class="fas fa-info-circle me-2"></i>Ready to start';
                 document.getElementById('monitoringStatus').className = 'alert alert-info';
+                document.getElementById('liveIndicator').style.display = 'none';
+                
+                // Unmount Video Stream
+                const streamImg = document.getElementById('cameraStream');
+                streamImg.src = '';
+                streamImg.style.display = 'none';
+                document.getElementById('cameraPlaceholder').style.display = 'block';
                 
                 this.showAlert('Monitoring stopped!', 'info');
                 await this.loadDashboardData(); // Refresh data
@@ -227,6 +276,11 @@ class FocusMonitor {
         document.getElementById('eyeAlerts').textContent = data.event_breakdown.eye_closed;
         document.getElementById('phoneAlerts').textContent = data.event_breakdown.phone_detected;
         
+        const totalMinutes = Math.round((data.total_focus_time + data.total_distraction_time) / 60);
+        const totalAlertsCount = data.event_breakdown.eye_closed + data.event_breakdown.phone_detected;
+        if (document.getElementById('totalTime')) document.getElementById('totalTime').textContent = `${totalMinutes} min`;
+        if (document.getElementById('totalAlerts')) document.getElementById('totalAlerts').textContent = totalAlertsCount;
+        
         // Update goal progress
         const progressBar = document.getElementById('goalProgress');
         const progressText = document.getElementById('goalProgressText');
@@ -238,28 +292,63 @@ class FocusMonitor {
         
         // Update events table
         this.updateEventsTable(data.recent_events);
+        
+        // Update camera focus/distraction state
+        const cameraContainer = document.getElementById('cameraContainer');
+        if (cameraContainer) {
+            cameraContainer.classList.remove('camera-focused', 'camera-distracted');
+            
+            if (data.monitoring_active) {
+                let isDistracted = false;
+                if (data.recent_events && data.recent_events.length > 0) {
+                    const latestEvent = data.recent_events[0];
+                    const eventTime = new Date(latestEvent.timestamp);
+                    const now = new Date();
+                    // Distracted if the newest event occurred within the last 10 seconds
+                    if (now - eventTime < 10000) {
+                        isDistracted = true;
+                    }
+                }
+                
+                if (isDistracted) {
+                    cameraContainer.classList.add('camera-distracted');
+                } else {
+                    cameraContainer.classList.add('camera-focused');
+                }
+            }
+        }
     }
     
     updateEventsTable(events) {
-        const tbody = document.getElementById('eventsTable');
+        const container = document.getElementById('eventsTable');
         
         if (events.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No events yet</td></tr>';
+            container.innerHTML = '<div class="text-center text-muted py-4">No events yet</div>';
             return;
         }
         
-        tbody.innerHTML = events.map(event => {
+        container.innerHTML = events.map(event => {
             const time = new Date(event.timestamp).toLocaleTimeString();
-            const eventIcon = event.type === 'eye_closed' ? '👀' : '📱';
-            const eventName = event.type === 'eye_closed' ? 'Eyes Closed Too Long' : 'Phone Detected';
-            const duration = event.type === 'eye_closed' ? `${event.duration.toFixed(1)}s` : '-';
+            const isEye = event.type === 'eye_closed';
+            const eventIcon = isEye ? 'fa-eye-slash' : 'fa-mobile-alt';
+            const eventName = isEye ? 'Eyes Closed Too Long' : 'Phone Detected';
+            const alertClass = isEye ? 'alert-warning' : 'alert-danger text-white';
+            const duration = isEye ? `${event.duration.toFixed(1)}s` : '-';
             
+            // Check if event is brand new (happened in last 5.5 seconds) to apply animation
+            const now = new Date();
+            const eventTime = new Date(event.timestamp);
+            const isNew = (now - eventTime) < 5500; 
+            const animationClass = isNew ? 'slide-in' : '';
+
             return `
-                <tr>
-                    <td>${time}</td>
-                    <td>${eventIcon} ${eventName}</td>
-                    <td>${duration}</td>
-                </tr>
+                <div class="alert ${alertClass} ${animationClass} mb-2 shadow-sm border-0 p-3 rounded-3">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <strong style="font-size: 0.9rem;"><i class="fas ${eventIcon} me-2"></i>${eventName}</strong>
+                        <small style="font-size: 0.75rem; opacity: 0.85;">${time}</small>
+                    </div>
+                    ${isEye ? `<div style="font-size: 0.8rem; opacity: 0.9;">Duration: ${duration}</div>` : ''}
+                </div>
             `;
         }).join('');
     }
@@ -267,7 +356,7 @@ class FocusMonitor {
     updateCharts() {
         this.updateFocusChart();
         this.updateDistractionChart();
-        this.updateComparisonChart();
+        this.updateLeaderboard();
     }
     
     updateFocusChart() {
@@ -328,72 +417,126 @@ class FocusMonitor {
         });
     }
     
-    async updateComparisonChart() {
+    async updateLeaderboard() {
         try {
             const response = await fetch('/api/comparison_data');
-            const comparisonData = await response.json();
+            const leaderboardData = await response.json();
             
-            const ctx = document.getElementById('comparisonChart').getContext('2d');
+            this.fullLeaderboardData = leaderboardData;
+            this.renderLeaderboard();
             
-            if (this.charts.comparison) {
-                this.charts.comparison.destroy();
+            // Set up search listener once
+            if (!this.searchConfigured) {
+                document.getElementById('leaderboardSearch').addEventListener('input', (e) => {
+                    this.leaderboardSearchText = e.target.value.toLowerCase();
+                    this.renderLeaderboard();
+                });
+                this.searchConfigured = true;
             }
-            
-            this.charts.comparison = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: comparisonData.map(user => user.username),
-                    datasets: [{
-                        label: 'Focus Percentage',
-                        data: comparisonData.map(user => user.focus_percentage),
-                        backgroundColor: '#007bff',
-                        borderColor: '#0056b3',
-                        borderWidth: 1
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            max: 100,
-                            ticks: {
-                                callback: function(value) {
-                                    return value + '%';
-                                }
-                            }
-                        }
-                    },
-                    plugins: {
-                        legend: {
-                            display: false
-                        }
-                    }
-                }
-            });
         } catch (error) {
-            console.error('Failed to load comparison data:', error);
+            console.error('Failed to load leaderboard data:', error);
         }
     }
     
-    triggerAlert(eventType) {
-        // Play sound
-        if (this.alertSound) {
-            this.alertSound.play().catch(e => console.log('Could not play alert sound'));
+    changeLeaderboardPage(delta) {
+        this.leaderboardPage += delta;
+        if (this.leaderboardPage < 1) this.leaderboardPage = 1;
+        this.renderLeaderboard();
+    }
+    
+    renderLeaderboard() {
+        const tbody = document.getElementById('leaderboardTableBody');
+        if (!tbody || !this.fullLeaderboardData) return;
+        
+        const searchText = this.leaderboardSearchText || '';
+        
+        // 1. Assign true reality rank
+        const correctlyRanked = this.fullLeaderboardData.map((u, i) => ({...u, trueRank: i + 1}));
+        
+        // 2. Filter search text
+        let filteredUsers = correctlyRanked.filter(user => user.username.toLowerCase().includes(searchText));
+        
+        // 3. Extract the currentUser safely so they aren't randomly paginated away
+        const currentUserName = this.currentUser ? this.currentUser.username : null;
+        const currentUserObj = correctlyRanked.find(u => u.username === currentUserName);
+        let allExceptCurrent = filteredUsers.filter(u => u.username !== currentUserName);
+        
+        // Pagination logic
+        const totalPages = Math.max(1, Math.ceil(allExceptCurrent.length / this.leaderboardPageSize));
+        if (this.leaderboardPage > totalPages) this.leaderboardPage = totalPages;
+        
+        const startIndex = (this.leaderboardPage - 1) * this.leaderboardPageSize;
+        const pageUsers = allExceptCurrent.slice(startIndex, startIndex + this.leaderboardPageSize);
+        
+        // DOM Generation function for row
+        const createRow = (user, isPinned = false) => {
+            const isCurrent = user.username === currentUserName;
+            const rowClass = isPinned ? 'table-primary fw-bold text-dark' : (isCurrent ? 'table-primary fw-bold bg-opacity-10' : '');
+            
+            let completionPercent = 0;
+            if (user.daily_goal_minutes > 0) {
+                completionPercent = Math.min(100, Math.round((user.focus_time / user.daily_goal_minutes) * 100));
+            }
+            
+            return `<tr class="${rowClass}">
+                <td class="ps-4 fw-bold">#${user.trueRank}</td>
+                <td>
+                    <span class="d-flex align-items-center">
+                        ${isCurrent ? '<i class="fas fa-star text-warning me-2"></i>' : ''}
+                        ${user.username}
+                        ${isPinned ? '<span class="badge bg-primary ms-2 shadow-sm">You</span>' : ''}
+                    </span>
+                </td>
+                <td>${user.daily_goal_minutes} min</td>
+                <td class="text-success fw-bold">${Math.round(user.focus_time)} min</td>
+                <td class="text-danger">${Math.round(user.distraction_time)} min</td>
+                <td class="pe-4 text-end">
+                    <span class="${completionPercent >= 100 ? 'text-success fw-bold' : ''}">${completionPercent}%</span>
+                </td>
+            </tr>`;
+        };
+        
+        let htmlContext = pageUsers.map(u => createRow(u, false)).join('');
+        
+        // Pad with completely empty invisible rows to guarantee 4 visual slots before the 5th pinned row
+        const emptyRowsNeeded = this.leaderboardPageSize - pageUsers.length;
+        for (let i = 0; i < emptyRowsNeeded; i++) {
+            htmlContext += `<tr>
+                <td class="text-muted opacity-25"># -</td>
+                <td class="text-muted opacity-25">-</td>
+                <td class="text-muted opacity-25">-</td>
+                <td class="text-muted opacity-25">-</td>
+                <td class="text-muted opacity-25">-</td>
+                <td class="text-muted opacity-25 text-end">-</td>
+            </tr>`;
+        }
+
+        // 4. Pin 5th entry accurately at bottom
+        if (currentUserObj) {
+            htmlContext += '<tr style="border-top: 3px solid rgba(0,0,0,0.1);"><td colspan="6" class="p-0"></td></tr>';
+            htmlContext += createRow(currentUserObj, true);
         }
         
-        // Show toast notification
+        tbody.innerHTML = htmlContext;
+        
+        // Update pagination UI constraints
+        const pageInfo = document.getElementById('leaderboardPageInfo');
+        if (pageInfo) pageInfo.textContent = `Page ${this.leaderboardPage} of ${totalPages}`;
+        const btnPrev = document.getElementById('btnPrevPage');
+        if (btnPrev) btnPrev.disabled = this.leaderboardPage <= 1;
+        const btnNext = document.getElementById('btnNextPage');
+        if (btnNext) btnNext.disabled = this.leaderboardPage >= totalPages;
+    }
+    
+    triggerAlert(eventType) {
+        // Visual toast notification
         const alertMessage = eventType === 'eye_closed' ? 
-            '👀 Eyes closed too long! Stay focused!' : 
+            '👀 WAKE UP! Eyes closed too long!' : 
             '📱 Phone detected! Put it away!';
         
         document.getElementById('alertMessage').textContent = alertMessage;
         const toast = new bootstrap.Toast(document.getElementById('alertToast'));
         toast.show();
-        
-        // Add visual feedback
-        document.body.classList.add('alert-shake');
-        setTimeout(() => document.body.classList.remove('alert-shake'), 500);
     }
     
     createAlertSound() {
@@ -402,23 +545,40 @@ class FocusMonitor {
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
             
             this.alertSound = {
-                play: () => {
-                    const oscillator = audioContext.createOscillator();
-                    const gainNode = audioContext.createGain();
-                    
-                    oscillator.connect(gainNode);
-                    gainNode.connect(audioContext.destination);
-                    
-                    oscillator.frequency.value = 800;
-                    oscillator.type = 'sine';
-                    
-                    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
-                    
-                    oscillator.start(audioContext.currentTime);
-                    oscillator.stop(audioContext.currentTime + 0.5);
-                    
-                    return Promise.resolve();
+                ctx: audioContext,
+                beepInterval: null,
+                isPlaying: false,
+                startAlarm: () => {
+                    if (audioContext.state === 'suspended') audioContext.resume();
+                    if (this.alertSound.isPlaying) return;
+                    this.alertSound.isPlaying = true;
+
+                    const playBeep = () => {
+                        const oscillator = audioContext.createOscillator();
+                        const gainNode = audioContext.createGain();
+                        
+                        oscillator.connect(gainNode);
+                        gainNode.connect(audioContext.destination);
+                        
+                        oscillator.frequency.value = 800; // Ear-piercing
+                        oscillator.type = 'square'; // Extremely harsh
+                        
+                        gainNode.gain.setValueAtTime(1.0, audioContext.currentTime); // LOUD
+                        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+                        
+                        oscillator.start(audioContext.currentTime);
+                        oscillator.stop(audioContext.currentTime + 0.3);
+                    };
+
+                    playBeep();
+                    this.alertSound.beepInterval = setInterval(playBeep, 400); // 400ms barrage
+                },
+                stopAlarm: () => {
+                    this.alertSound.isPlaying = false;
+                    if (this.alertSound.beepInterval) {
+                        clearInterval(this.alertSound.beepInterval);
+                        this.alertSound.beepInterval = null;
+                    }
                 }
             };
         } catch (error) {
@@ -427,10 +587,30 @@ class FocusMonitor {
     }
     
     startDataUpdates() {
-        // Update dashboard data every 5 seconds
+        // Update dashboard tabular data every 5 seconds
         this.updateInterval = setInterval(() => {
             this.loadDashboardData();
         }, 5000);
+        
+        // Fast status polling for real-time continuous alarms (every 500ms)
+        this.statusInterval = setInterval(async () => {
+            if (!this.monitoringActive) return;
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                
+                if (data.eye_closed || data.phone_detected) {
+                    if (this.alertSound && this.alertSound.startAlarm) this.alertSound.startAlarm();
+                    document.body.classList.add('alert-shake');
+                    // Flash deep red visually to accompany the alarm
+                    document.body.style.backgroundColor = '#4a0404';
+                } else {
+                    if (this.alertSound && this.alertSound.stopAlarm) this.alertSound.stopAlarm();
+                    document.body.classList.remove('alert-shake');
+                    document.body.style.backgroundColor = '';
+                }
+            } catch(e) {}
+        }, 500);
     }
     
     async resetUserData() {
@@ -495,5 +675,5 @@ async function exportData(format) {
 
 // Initialize app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    new FocusMonitor();
+    window.focusMonitorApp = new FocusMonitor();
 });
