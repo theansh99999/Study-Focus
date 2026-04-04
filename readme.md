@@ -18,7 +18,7 @@ A comprehensive Flask-based application that monitors your productivity and focu
 - **Phone Detection** → Detects phone usage in real-time  
 - **Multi-person Detection** → Detects multiple people in frame  
 - **Real-time Event Logging** → Records all events with timestamps and user info
-
+- **Face Direction Tracking** → Detects if the user is looking away from the screen
 ### 🔐 User Management
 - Username-based login  
 - **User Registration system (in progress)**  
@@ -50,7 +50,6 @@ A comprehensive Flask-based application that monitors your productivity and focu
 - UI redesign for a more modern and clean dashboard  
 - User registration & authentication system  
 - Performance optimization for real-time monitoring
-- Face Direction Tracking
 - Posture Detection
 - Yawning / Drowsiness Detection
 - Hand Activity Tracking(using phone but not in frame)

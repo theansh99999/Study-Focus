@@ -73,7 +73,7 @@ camera = None
 monitoring_thread = None
 camera_lock = threading.Lock()
 latest_processed_frame = None  # Holds the latest JPEG byte array for streaming
-current_alert_state = {'eye_closed': False, 'phone_detected': False, 'multiple_people': False}
+current_alert_state = {'eye_closed': False, 'phone_detected': False, 'multiple_people': False, 'looking_away': False, 'gaze_direction': 'center'}
 # Phone detection persistence config
 PHONE_CONF_THRESHOLD = 0.65   # YOLO confidence threshold
 MIN_PHONE_FRAMES = 4         # consecutive frames required to confirm phone
@@ -87,6 +87,14 @@ BASELINE_FRAMES = 50
 EAR_SMOOTH_WINDOW = 8
 EAR_DYNAMIC_MULTIPLIER = 0.7
 EYE_ALERT_COOLDOWN = 5.0
+
+# Gaze / looking-away config
+GAZE_WARN_IMMEDIATELY = True      # warn as soon as gaze leaves center
+GAZE_DISTRACTION_THRESHOLD = 10.0 # seconds before logging as distraction
+GAZE_ALERT_COOLDOWN = 10.0        # seconds between gaze distraction DB logs
+# Iris ratio thresholds (tuned for frontal webcam; adjust if needed)
+GAZE_LR_THRESHOLD = 0.38          # iris pos ratio < this -> looking left; > (1-this) -> right
+GAZE_UD_THRESHOLD = 0.38          # iris pos ratio < this -> looking up; > (1-this) -> down
 
 # ----------------- Helper functions -----------------
 def calculate_ear(landmarks, frame_shape):
@@ -117,6 +125,57 @@ def calculate_ear(landmarks, frame_shape):
     leftEAR = eye_aspect_ratio(LEFT_EYE)
     rightEAR = eye_aspect_ratio(RIGHT_EYE)
     return (leftEAR + rightEAR) / 2.0
+
+def calculate_gaze_direction(landmarks, frame_shape):
+    """
+    Estimate gaze direction using MediaPipe iris landmarks.
+    Uses left iris (landmarks 468-472) and left eye corners (33, 133).
+    Returns: 'center', 'left', 'right', 'up', 'down'
+    Requires FaceMesh with refine_landmarks=True.
+    """
+    h, w = frame_shape[:2]
+
+    # Left iris center is landmark 468, right iris center is landmark 473
+    # Left eye horizontal: outer corner=33, inner corner=133
+    # Left eye vertical:   top=159, bottom=145
+    try:
+        # --- Horizontal gaze (use left iris) ---
+        iris_left_x  = landmarks[468].x  # left iris center x (normalized)
+        eye_left_x   = landmarks[33].x   # outer left eye corner
+        eye_right_x  = landmarks[133].x  # inner left eye corner (closer to nose)
+        eye_width = abs(eye_right_x - eye_left_x)
+        if eye_width < 1e-4:
+            return 'center'
+        # Relative position of iris within eye socket (0=left, 1=right)
+        iris_ratio_h = (iris_left_x - min(eye_left_x, eye_right_x)) / eye_width
+
+        # --- Vertical gaze ---
+        iris_left_y = landmarks[468].y
+        eye_top_y   = landmarks[159].y
+        eye_bot_y   = landmarks[145].y
+        eye_height  = abs(eye_bot_y - eye_top_y)
+        if eye_height < 1e-4:
+            iris_ratio_v = 0.5
+        else:
+            iris_ratio_v = (iris_left_y - min(eye_top_y, eye_bot_y)) / eye_height
+
+        # Clamp ratios
+        iris_ratio_h = max(0.0, min(1.0, iris_ratio_h))
+        iris_ratio_v = max(0.0, min(1.0, iris_ratio_v))
+
+        # Determine direction (horizontal first, then vertical)
+        if iris_ratio_h < GAZE_LR_THRESHOLD:
+            return 'right'   # frame is flipped so left in frame = user looking right
+        elif iris_ratio_h > (1.0 - GAZE_LR_THRESHOLD):
+            return 'left'
+        elif iris_ratio_v < GAZE_UD_THRESHOLD:
+            return 'up'
+        elif iris_ratio_v > (1.0 - GAZE_UD_THRESHOLD):
+            return 'down'
+        else:
+            return 'center'
+    except (IndexError, AttributeError):
+        return 'center'
 
 def detect_objects_with_yolo(frame):
     """
@@ -199,6 +258,13 @@ def monitor_user():
         multiple_people_event_start = None
         last_multiple_people_alert_time = 0
 
+        # Gaze / looking-away detection
+        gaze_away_start = None          # time when user first looked away
+        last_gaze_alert_time = 0        # time of last DB log for gaze
+        gaze_direction = 'center'       # current smoothed direction
+        gaze_history = []               # smooth over last N frames
+        GAZE_SMOOTH_FRAMES = 5
+
         while monitoring_active and camera is not None:
             with camera_lock:
                 ret, frame = camera.read()
@@ -276,6 +342,43 @@ def monitor_user():
                         eye_closed_start = None
                         current_alert_state['eye_closed'] = False
 
+                    # ----- Gaze Direction Detection -----
+                    raw_direction = calculate_gaze_direction(chosen_landmarks.landmark, frame.shape)
+                    gaze_history.append(raw_direction)
+                    if len(gaze_history) > GAZE_SMOOTH_FRAMES:
+                        gaze_history.pop(0)
+                    # majority vote in recent window
+                    from collections import Counter
+                    gaze_direction = Counter(gaze_history).most_common(1)[0][0]
+
+                    current_alert_state['gaze_direction'] = gaze_direction
+
+                    if gaze_direction != 'center':
+                        # Immediately warn
+                        current_alert_state['looking_away'] = True
+                        if gaze_away_start is None:
+                            gaze_away_start = current_time
+                        away_duration = current_time - gaze_away_start
+                        # Log as distraction after threshold
+                        if away_duration >= GAZE_DISTRACTION_THRESHOLD:
+                            if (current_time - last_gaze_alert_time) >= GAZE_ALERT_COOLDOWN:
+                                ev = Event(user_id=current_user.id, session_id=session.id,
+                                           event_type='looking_away', duration=away_duration)
+                                db.session.add(ev)
+                                db.session.commit()
+                                last_gaze_alert_time = current_time
+                                gaze_away_start = current_time  # reset window
+                                print(f"[ALERT] looking_away ({gaze_direction}) logged: {away_duration:.2f}s")
+                    else:
+                        current_alert_state['looking_away'] = False
+                        gaze_away_start = None
+            else:
+                # No face detected - reset gaze state
+                current_alert_state['looking_away'] = False
+                current_alert_state['gaze_direction'] = 'center'
+                gaze_away_start = None
+                gaze_history = []
+
             # ----- Phone and Multiple People detection (YOLO) -----
             phone_detected, phone_rect, phone_conf, person_count, persons_rect = detect_objects_with_yolo(frame)
             if phone_detected:
@@ -334,6 +437,20 @@ def monitor_user():
                 cv2.putText(frame, "Multiple People!", (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
             if smooth_ear and baseline_ear and smooth_ear < (baseline_ear * EAR_DYNAMIC_MULTIPLIER):
                 cv2.putText(frame, "Eyes Closed", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
+            if gaze_direction != 'center':
+                dir_arrows = {'left': '<< LEFT', 'right': 'RIGHT >>', 'up': '^ UP', 'down': 'DOWN v'}
+                dir_label = dir_arrows.get(gaze_direction, gaze_direction.upper())
+                color = (0, 255, 255)  # cyan warning
+                # Show how long they've been away
+                if gaze_away_start:
+                    away_secs = current_time - gaze_away_start
+                    label_txt = f"Looking {dir_label} ({away_secs:.1f}s)"
+                    if away_secs >= GAZE_DISTRACTION_THRESHOLD:
+                        color = (0, 0, 255)  # red if over threshold
+                        label_txt = f"DISTRACTED! {dir_label} ({away_secs:.1f}s)"
+                else:
+                    label_txt = f"Looking {dir_label}"
+                cv2.putText(frame, label_txt, (30, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
                 
             # Encode frame for stream
             ret, jpeg = cv2.imencode('.jpg', frame)
@@ -470,6 +587,7 @@ def dashboard_data():
     eye_closed_events = len([e for e in events if e.event_type == 'eye_closed'])
     phone_detected_events = len([e for e in events if e.event_type == 'phone_detected'])
     multiple_people_events = len([e for e in events if e.event_type == 'multiple_people'])
+    looking_away_events = len([e for e in events if e.event_type == 'looking_away'])
     goal_progress = min(100, (total_focus_time / 60) / (current_user.daily_goal_minutes + 1e-9) * 100)
 
     return jsonify({
@@ -485,7 +603,8 @@ def dashboard_data():
         'event_breakdown': {
             'eye_closed': eye_closed_events,
             'phone_detected': phone_detected_events,
-            'multiple_people': multiple_people_events
+            'multiple_people': multiple_people_events,
+            'looking_away': looking_away_events
         },
         'monitoring_active': monitoring_active
     })

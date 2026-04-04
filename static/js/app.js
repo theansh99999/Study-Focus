@@ -278,7 +278,7 @@ class FocusMonitor {
         if (document.getElementById('peopleAlerts')) document.getElementById('peopleAlerts').textContent = data.event_breakdown.multiple_people;
         
         const totalMinutes = Math.round((data.total_focus_time + data.total_distraction_time) / 60);
-        const totalAlertsCount = data.event_breakdown.eye_closed + data.event_breakdown.phone_detected + data.event_breakdown.multiple_people;
+        const totalAlertsCount = data.event_breakdown.eye_closed + data.event_breakdown.phone_detected + data.event_breakdown.multiple_people + (data.event_breakdown.looking_away || 0);
         if (document.getElementById('totalTime')) document.getElementById('totalTime').textContent = `${totalMinutes} min`;
         if (document.getElementById('totalAlerts')) document.getElementById('totalAlerts').textContent = totalAlertsCount;
         
@@ -333,11 +333,12 @@ class FocusMonitor {
             let isEye = event.type === 'eye_closed';
             let isPhone = event.type === 'phone_detected';
             let isMultiplePeople = event.type === 'multiple_people';
+            let isLookingAway = event.type === 'looking_away';
             
-            let eventIcon = isEye ? 'fa-eye-slash' : (isPhone ? 'fa-mobile-alt' : 'fa-users');
-            let eventName = isEye ? 'Eyes Closed Too Long' : (isPhone ? 'Phone Detected' : 'Multiple People Detected');
-            let alertClass = isEye ? 'alert-warning' : (isPhone ? 'alert-danger text-white' : 'alert-info text-dark');
-            let duration = (isEye || isMultiplePeople) ? `${event.duration.toFixed(1)}s` : '-';
+            let eventIcon = isEye ? 'fa-eye-slash' : (isPhone ? 'fa-mobile-alt' : (isMultiplePeople ? 'fa-users' : 'fa-eye'));
+            let eventName = isEye ? 'Eyes Closed Too Long' : (isPhone ? 'Phone Detected' : (isMultiplePeople ? 'Multiple People Detected' : 'Looking Away from Screen'));
+            let alertClass = isEye ? 'alert-warning' : (isPhone ? 'alert-danger text-white' : (isMultiplePeople ? 'alert-info text-dark' : 'alert-secondary text-white'));
+            let duration = (isEye || isMultiplePeople || isLookingAway) ? `${event.duration.toFixed(1)}s` : '-';
             
             // Check if event is brand new (happened in last 5.5 seconds) to apply animation
             const now = new Date();
@@ -403,10 +404,15 @@ class FocusMonitor {
         this.charts.distraction = new Chart(ctx, {
             type: 'pie',
             data: {
-                labels: ['👀 Eyes Closed', '📱 Phone Usage', '👥 Multiple People'],
+                labels: ['👀 Eyes Closed', '📱 Phone Usage', '👥 Multiple People', '👁️ Looking Away'],
                 datasets: [{
-                    data: [data.event_breakdown.eye_closed, data.event_breakdown.phone_detected, data.event_breakdown.multiple_people],
-                    backgroundColor: ['#ffc107', '#fd7e14', '#17a2b8'],
+                    data: [
+                        data.event_breakdown.eye_closed,
+                        data.event_breakdown.phone_detected,
+                        data.event_breakdown.multiple_people,
+                        data.event_breakdown.looking_away || 0
+                    ],
+                    backgroundColor: ['#ffc107', '#fd7e14', '#17a2b8', '#6f42c1'],
                     borderWidth: 2
                 }]
             },
@@ -541,6 +547,8 @@ class FocusMonitor {
             alertMessage = '📱 Phone detected! Put it away!';
         } else if (eventType === 'multiple_people') {
             alertMessage = '👥 Multiple people detected!';
+        } else if (eventType === 'looking_away') {
+            alertMessage = '👁️ You are looking away from the screen!';
         }
         
         document.getElementById('alertMessage').textContent = alertMessage;
@@ -608,15 +616,29 @@ class FocusMonitor {
                 const response = await fetch('/api/status');
                 const data = await response.json();
                 
-                if (data.eye_closed || data.phone_detected || data.multiple_people) {
+                if (data.eye_closed || data.phone_detected || data.multiple_people || data.looking_away) {
                     if (this.alertSound && this.alertSound.startAlarm) this.alertSound.startAlarm();
                     document.body.classList.add('alert-shake');
                     // Flash deep red visually to accompany the alarm
                     document.body.style.backgroundColor = '#4a0404';
+
+                    // Show gaze direction overlay if looking away
+                    if (data.looking_away && data.gaze_direction && data.gaze_direction !== 'center') {
+                        const dirMap = {left: '← LEFT', right: 'RIGHT →', up: '↑ UP', down: 'DOWN ↓'};
+                        const dirLabel = dirMap[data.gaze_direction] || data.gaze_direction.toUpperCase();
+                        // Only show a toast once per direction change
+                        if (this._lastGazeDir !== data.gaze_direction) {
+                            this._lastGazeDir = data.gaze_direction;
+                            document.getElementById('alertMessage').textContent = `👁️ Looking ${dirLabel} — focus on your screen!`;
+                            const toast = new bootstrap.Toast(document.getElementById('alertToast'), {delay: 3000});
+                            toast.show();
+                        }
+                    }
                 } else {
                     if (this.alertSound && this.alertSound.stopAlarm) this.alertSound.stopAlarm();
                     document.body.classList.remove('alert-shake');
                     document.body.style.backgroundColor = '';
+                    this._lastGazeDir = null;
                 }
             } catch(e) {}
         }, 500);

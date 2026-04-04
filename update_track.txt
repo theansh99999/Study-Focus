@@ -6,3 +6,4 @@ ui1 -> ui improved from basic to decent looking
             ABOUT FEATURES VERSIONS OF GIT COMMITS
 f1 -> phone detection using yolo is working perfect
 f2 -> multi person detection is working perfect
+f3 -> gaze detection is working perfect
