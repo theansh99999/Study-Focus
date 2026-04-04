@@ -275,9 +275,10 @@ class FocusMonitor {
         document.getElementById('distractionTime').textContent = `${Math.round(data.total_distraction_time / 60)} min`;
         document.getElementById('eyeAlerts').textContent = data.event_breakdown.eye_closed;
         document.getElementById('phoneAlerts').textContent = data.event_breakdown.phone_detected;
+        if (document.getElementById('peopleAlerts')) document.getElementById('peopleAlerts').textContent = data.event_breakdown.multiple_people;
         
         const totalMinutes = Math.round((data.total_focus_time + data.total_distraction_time) / 60);
-        const totalAlertsCount = data.event_breakdown.eye_closed + data.event_breakdown.phone_detected;
+        const totalAlertsCount = data.event_breakdown.eye_closed + data.event_breakdown.phone_detected + data.event_breakdown.multiple_people;
         if (document.getElementById('totalTime')) document.getElementById('totalTime').textContent = `${totalMinutes} min`;
         if (document.getElementById('totalAlerts')) document.getElementById('totalAlerts').textContent = totalAlertsCount;
         
@@ -329,11 +330,14 @@ class FocusMonitor {
         
         container.innerHTML = events.map(event => {
             const time = new Date(event.timestamp).toLocaleTimeString();
-            const isEye = event.type === 'eye_closed';
-            const eventIcon = isEye ? 'fa-eye-slash' : 'fa-mobile-alt';
-            const eventName = isEye ? 'Eyes Closed Too Long' : 'Phone Detected';
-            const alertClass = isEye ? 'alert-warning' : 'alert-danger text-white';
-            const duration = isEye ? `${event.duration.toFixed(1)}s` : '-';
+            let isEye = event.type === 'eye_closed';
+            let isPhone = event.type === 'phone_detected';
+            let isMultiplePeople = event.type === 'multiple_people';
+            
+            let eventIcon = isEye ? 'fa-eye-slash' : (isPhone ? 'fa-mobile-alt' : 'fa-users');
+            let eventName = isEye ? 'Eyes Closed Too Long' : (isPhone ? 'Phone Detected' : 'Multiple People Detected');
+            let alertClass = isEye ? 'alert-warning' : (isPhone ? 'alert-danger text-white' : 'alert-info text-dark');
+            let duration = (isEye || isMultiplePeople) ? `${event.duration.toFixed(1)}s` : '-';
             
             // Check if event is brand new (happened in last 5.5 seconds) to apply animation
             const now = new Date();
@@ -399,10 +403,10 @@ class FocusMonitor {
         this.charts.distraction = new Chart(ctx, {
             type: 'pie',
             data: {
-                labels: ['👀 Eyes Closed', '📱 Phone Usage'],
+                labels: ['👀 Eyes Closed', '📱 Phone Usage', '👥 Multiple People'],
                 datasets: [{
-                    data: [data.event_breakdown.eye_closed, data.event_breakdown.phone_detected],
-                    backgroundColor: ['#ffc107', '#fd7e14'],
+                    data: [data.event_breakdown.eye_closed, data.event_breakdown.phone_detected, data.event_breakdown.multiple_people],
+                    backgroundColor: ['#ffc107', '#fd7e14', '#17a2b8'],
                     borderWidth: 2
                 }]
             },
@@ -530,9 +534,14 @@ class FocusMonitor {
     
     triggerAlert(eventType) {
         // Visual toast notification
-        const alertMessage = eventType === 'eye_closed' ? 
-            '👀 WAKE UP! Eyes closed too long!' : 
-            '📱 Phone detected! Put it away!';
+        let alertMessage = 'Focus Alert!';
+        if (eventType === 'eye_closed') {
+            alertMessage = '👀 WAKE UP! Eyes closed too long!';
+        } else if (eventType === 'phone_detected') {
+            alertMessage = '📱 Phone detected! Put it away!';
+        } else if (eventType === 'multiple_people') {
+            alertMessage = '👥 Multiple people detected!';
+        }
         
         document.getElementById('alertMessage').textContent = alertMessage;
         const toast = new bootstrap.Toast(document.getElementById('alertToast'));
@@ -599,7 +608,7 @@ class FocusMonitor {
                 const response = await fetch('/api/status');
                 const data = await response.json();
                 
-                if (data.eye_closed || data.phone_detected) {
+                if (data.eye_closed || data.phone_detected || data.multiple_people) {
                     if (this.alertSound && this.alertSound.startAlarm) this.alertSound.startAlarm();
                     document.body.classList.add('alert-shake');
                     // Flash deep red visually to accompany the alarm

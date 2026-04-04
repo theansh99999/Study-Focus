@@ -15,8 +15,8 @@ A comprehensive Flask-based application that monitors your productivity and focu
 
 ### 👁️ Core Monitoring (OpenCV + Mediapipe + YOLO)
 - **Eye Closure Detection** → Alerts when eyes remain closed for more than a threshold  
-- **Phone Detection** → Detects phone usage in real-time *(currently being improved)*  
-- **Multi-person Detection** → Detects multiple people in frame *(under development)*  
+- **Phone Detection** → Detects phone usage in real-time  
+- **Multi-person Detection** → Detects multiple people in frame  
 - **Real-time Event Logging** → Records all events with timestamps and user info
 
 ### 🔐 User Management
@@ -45,11 +45,18 @@ A comprehensive Flask-based application that monitors your productivity and focu
 - Dual alerts → Audio beep + Visual popup  
 - Real-time updates (dashboard refreshes every 5s)
 - Improved phone detection accuracy using YOLO  
+- Multi-person detection in frame 
 ## 🚧 Current Enhancements (Work in Progress)
 - UI redesign for a more modern and clean dashboard  
-- Multi-person detection stability fixes  
 - User registration & authentication system  
 - Performance optimization for real-time monitoring
+- Face Direction Tracking
+- Posture Detection
+- Yawning / Drowsiness Detection
+- Hand Activity Tracking(using phone but not in frame)
+- Sound-based Distraction Detection
+- Focus Score System
+- Smart Alerts (Not annoying)
 ---
 ## 🛠️ Tech Stack
 - **Backend:** Flask (Python)  

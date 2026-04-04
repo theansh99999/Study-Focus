@@ -4,4 +4,5 @@ ui1 -> ui improved from basic to decent looking
     -> different sections introduced like camera view, navbar,settings,etc
     -> live camera view is available in camera view and other things are working
             ABOUT FEATURES VERSIONS OF GIT COMMITS
-f1 ->phone detection using yolo is working perfect
+f1 -> phone detection using yolo is working perfect
+f2 -> multi person detection is working perfect

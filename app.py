@@ -73,13 +73,14 @@ camera = None
 monitoring_thread = None
 camera_lock = threading.Lock()
 latest_processed_frame = None  # Holds the latest JPEG byte array for streaming
-current_alert_state = {'eye_closed': False, 'phone_detected': False}
-
+current_alert_state = {'eye_closed': False, 'phone_detected': False, 'multiple_people': False}
 # Phone detection persistence config
 PHONE_CONF_THRESHOLD = 0.65   # YOLO confidence threshold
 MIN_PHONE_FRAMES = 4         # consecutive frames required to confirm phone
 MIN_PHONE_AREA = 1500        # minimum bbox area to consider (tune to camera/resolution)
 PHONE_ALERT_COOLDOWN = 5.0   # seconds between phone event logs
+MIN_MULTIPLE_PEOPLE_FRAMES = 4
+MULTIPLE_PEOPLE_ALERT_COOLDOWN = 5.0
 
 # EAR / eye-closure config
 BASELINE_FRAMES = 50
@@ -117,14 +118,20 @@ def calculate_ear(landmarks, frame_shape):
     rightEAR = eye_aspect_ratio(RIGHT_EYE)
     return (leftEAR + rightEAR) / 2.0
 
-def detect_phone_with_yolo(frame):
+def detect_objects_with_yolo(frame):
     """
-    Use YOLO to detect phones. Returns (True/False, bbox) where bbox=(x,y,w,h)
-    Implement confidence threshold, area threshold and return first matching bbox.
+    Use YOLO to detect phones and count people.
+    Returns (phone_detected, phone_rect, phone_conf, person_count, persons_rect)
     """
     # ultralytics supports both predict and direct call; here we use predict-like API
     # run inference (single image). Use larger imgsz for accuracy if you can.
-    results = yolo_model.predict(frame, imgsz=640, conf=PHONE_CONF_THRESHOLD, verbose=False)
+    results = yolo_model.predict(frame, imgsz=640, conf=0.5, verbose=False) # lowered to 0.5 to catch people too
+
+    phone_detected = False
+    phone_rect = None
+    phone_conf = 0.0
+    person_count = 0
+    persons_rect = []
 
     for res in results:
         # each res.boxes contains detected boxes
@@ -136,16 +143,25 @@ def detect_phone_with_yolo(frame):
             conf = float(box.conf[0])
             # In COCO, 'cell phone' class id is usually 67; but use model.names for safety
             label = yolo_model.names.get(cls_id, str(cls_id))
-            if label.lower() in ['cell phone', 'cellphone', 'mobile phone', 'phone', 'cellphone']:
-                xyxy = box.xyxy[0].cpu().numpy().astype(int)
-                x1, y1, x2, y2 = xyxy
-                w = x2 - x1
-                h = y2 - y1
-                area = w * h
-                # filter small boxes and require min confidence (already set by conf arg)
+            xyxy = box.xyxy[0].cpu().numpy().astype(int)
+            x1, y1, x2, y2 = xyxy
+            w = x2 - x1
+            h = y2 - y1
+            area = w * h
+
+            if label.lower() in ['cell phone', 'cellphone', 'mobile phone', 'phone']:
+                # filter small boxes and require min confidence
                 if area >= MIN_PHONE_AREA and conf >= PHONE_CONF_THRESHOLD:
-                    return True, (x1, y1, w, h), conf
-    return False, None, 0.0
+                    if not phone_detected:
+                        phone_detected = True
+                        phone_rect = (x1, y1, w, h)
+                        phone_conf = conf
+            elif label.lower() == 'person':
+                if conf >= 0.5:
+                    person_count += 1
+                    persons_rect.append((x1, y1, w, h))
+
+    return phone_detected, phone_rect, phone_conf, person_count, persons_rect
 
 # ----------------- Monitoring thread -----------------
 def monitor_user():
@@ -177,6 +193,11 @@ def monitor_user():
         phone_detected_frames = 0
         phone_event_start = None
         last_phone_alert_time = 0
+
+        # Multiple people detection persistence
+        multiple_people_detected_frames = 0
+        multiple_people_event_start = None
+        last_multiple_people_alert_time = 0
 
         while monitoring_active and camera is not None:
             with camera_lock:
@@ -255,8 +276,8 @@ def monitor_user():
                         eye_closed_start = None
                         current_alert_state['eye_closed'] = False
 
-            # ----- Phone detection (YOLO) -----
-            phone_detected, phone_rect, phone_conf = detect_phone_with_yolo(frame)
+            # ----- Phone and Multiple People detection (YOLO) -----
+            phone_detected, phone_rect, phone_conf, person_count, persons_rect = detect_objects_with_yolo(frame)
             if phone_detected:
                 phone_detected_frames += 1
             else:
@@ -280,11 +301,37 @@ def monitor_user():
             else:
                 current_alert_state['phone_detected'] = False
 
+            if person_count > 1:
+                multiple_people_detected_frames += 1
+            else:
+                multiple_people_detected_frames = 0
+                multiple_people_event_start = None
+
+            if multiple_people_detected_frames >= MIN_MULTIPLE_PEOPLE_FRAMES:
+                current_alert_state['multiple_people'] = True
+                if multiple_people_event_start is None:
+                    multiple_people_event_start = current_time
+                if (current_time - last_multiple_people_alert_time) >= MULTIPLE_PEOPLE_ALERT_COOLDOWN:
+                    duration = current_time - multiple_people_event_start
+                    ev = Event(user_id=current_user.id, session_id=session.id,
+                               event_type='multiple_people', duration=duration)
+                    db.session.add(ev)
+                    db.session.commit()
+                    last_multiple_people_alert_time = current_time
+                    multiple_people_event_start = current_time
+                    print(f"[ALERT] multiple_people logged: {duration:.2f}s")
+            else:
+                current_alert_state['multiple_people'] = False
+
             # Draw bounding boxes for streaming
             if phone_detected:
                 x1, y1, w, h = phone_rect
                 cv2.rectangle(frame, (x1, y1), (x1+w, y1+h), (0, 0, 255), 2)
                 cv2.putText(frame, f"Phone", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            if person_count > 1:
+                for (px1, py1, pw, ph) in persons_rect:
+                    cv2.rectangle(frame, (px1, py1), (px1+pw, py1+ph), (255, 0, 0), 2)
+                cv2.putText(frame, "Multiple People!", (30, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
             if smooth_ear and baseline_ear and smooth_ear < (baseline_ear * EAR_DYNAMIC_MULTIPLIER):
                 cv2.putText(frame, "Eyes Closed", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
                 
@@ -422,6 +469,7 @@ def dashboard_data():
     total_distraction_time = sum(s.distraction_duration for s in sessions)
     eye_closed_events = len([e for e in events if e.event_type == 'eye_closed'])
     phone_detected_events = len([e for e in events if e.event_type == 'phone_detected'])
+    multiple_people_events = len([e for e in events if e.event_type == 'multiple_people'])
     goal_progress = min(100, (total_focus_time / 60) / (current_user.daily_goal_minutes + 1e-9) * 100)
 
     return jsonify({
@@ -436,7 +484,8 @@ def dashboard_data():
         } for e in events],
         'event_breakdown': {
             'eye_closed': eye_closed_events,
-            'phone_detected': phone_detected_events
+            'phone_detected': phone_detected_events,
+            'multiple_people': multiple_people_events
         },
         'monitoring_active': monitoring_active
     })

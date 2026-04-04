@@ -12,3 +12,4 @@ docker-compose.yml
 test_yolo.py
 yolov8n.pt
 .gitignore
+future_plan.txt
