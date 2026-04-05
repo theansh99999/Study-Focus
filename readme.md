@@ -46,11 +46,11 @@ A comprehensive Flask-based application that monitors your productivity and focu
 - Real-time updates (dashboard refreshes every 5s)
 - Improved phone detection accuracy using YOLO  
 - Multi-person detection in frame 
+- Posture Detection
 ## 🚧 Current Enhancements (Work in Progress)
 - UI redesign for a more modern and clean dashboard  
 - User registration & authentication system  
 - Performance optimization for real-time monitoring
-- Posture Detection
 - Yawning / Drowsiness Detection
 - Hand Activity Tracking(using phone but not in frame)
 - Sound-based Distraction Detection
