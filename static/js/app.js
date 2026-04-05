@@ -276,6 +276,7 @@ class FocusMonitor {
         document.getElementById('eyeAlerts').textContent = data.event_breakdown.eye_closed;
         document.getElementById('phoneAlerts').textContent = data.event_breakdown.phone_detected;
         if (document.getElementById('peopleAlerts')) document.getElementById('peopleAlerts').textContent = data.event_breakdown.multiple_people;
+        if (document.getElementById('postureAlerts')) document.getElementById('postureAlerts').textContent = data.event_breakdown.posture_bad || 0;
         
         const totalMinutes = Math.round((data.total_focus_time + data.total_distraction_time) / 60);
         const totalAlertsCount = data.event_breakdown.eye_closed + data.event_breakdown.phone_detected + data.event_breakdown.multiple_people + (data.event_breakdown.looking_away || 0);
@@ -334,11 +335,28 @@ class FocusMonitor {
             let isPhone = event.type === 'phone_detected';
             let isMultiplePeople = event.type === 'multiple_people';
             let isLookingAway = event.type === 'looking_away';
+            let isPostureBad = event.type === 'posture_bad';
             
-            let eventIcon = isEye ? 'fa-eye-slash' : (isPhone ? 'fa-mobile-alt' : (isMultiplePeople ? 'fa-users' : 'fa-eye'));
-            let eventName = isEye ? 'Eyes Closed Too Long' : (isPhone ? 'Phone Detected' : (isMultiplePeople ? 'Multiple People Detected' : 'Looking Away from Screen'));
-            let alertClass = isEye ? 'alert-warning' : (isPhone ? 'alert-danger text-white' : (isMultiplePeople ? 'alert-info text-dark' : 'alert-secondary text-white'));
-            let duration = (isEye || isMultiplePeople || isLookingAway) ? `${event.duration.toFixed(1)}s` : '-';
+            let eventIcon, eventName, alertClass, duration;
+            if (isEye) {
+                eventIcon = 'fa-eye-slash'; eventName = 'Eyes Closed Too Long';
+                alertClass = 'alert-warning'; duration = `${event.duration.toFixed(1)}s`;
+            } else if (isPhone) {
+                eventIcon = 'fa-mobile-alt'; eventName = 'Phone Detected';
+                alertClass = 'alert-danger text-white'; duration = '-';
+            } else if (isMultiplePeople) {
+                eventIcon = 'fa-users'; eventName = 'Multiple People Detected';
+                alertClass = 'alert-info text-dark'; duration = `${event.duration.toFixed(1)}s`;
+            } else if (isLookingAway) {
+                eventIcon = 'fa-eye'; eventName = 'Looking Away from Screen';
+                alertClass = 'alert-secondary text-white'; duration = `${event.duration.toFixed(1)}s`;
+            } else if (isPostureBad) {
+                eventIcon = 'fa-person-booth'; eventName = 'Bad Posture (Slouching)';
+                alertClass = 'alert-warning text-dark'; duration = `${event.duration.toFixed(1)}s`;
+            } else {
+                eventIcon = 'fa-bell'; eventName = event.type;
+                alertClass = 'alert-secondary'; duration = '-';
+            }
             
             // Check if event is brand new (happened in last 5.5 seconds) to apply animation
             const now = new Date();
@@ -404,15 +422,16 @@ class FocusMonitor {
         this.charts.distraction = new Chart(ctx, {
             type: 'pie',
             data: {
-                labels: ['👀 Eyes Closed', '📱 Phone Usage', '👥 Multiple People', '👁️ Looking Away'],
+                labels: ['👀 Eyes Closed', '📱 Phone Usage', '👥 Multiple People', '👁️ Looking Away', '🧍 Bad Posture'],
                 datasets: [{
                     data: [
                         data.event_breakdown.eye_closed,
                         data.event_breakdown.phone_detected,
                         data.event_breakdown.multiple_people,
-                        data.event_breakdown.looking_away || 0
+                        data.event_breakdown.looking_away || 0,
+                        data.event_breakdown.posture_bad || 0
                     ],
-                    backgroundColor: ['#ffc107', '#fd7e14', '#17a2b8', '#6f42c1'],
+                    backgroundColor: ['#ffc107', '#fd7e14', '#17a2b8', '#6f42c1', '#e05d44'],
                     borderWidth: 2
                 }]
             },
@@ -549,6 +568,8 @@ class FocusMonitor {
             alertMessage = '👥 Multiple people detected!';
         } else if (eventType === 'looking_away') {
             alertMessage = '👁️ You are looking away from the screen!';
+        } else if (eventType === 'posture_bad') {
+            alertMessage = '🧍 Sit up straight! Slouching detected — fatigue risk!';
         }
         
         document.getElementById('alertMessage').textContent = alertMessage;
@@ -616,7 +637,7 @@ class FocusMonitor {
                 const response = await fetch('/api/status');
                 const data = await response.json();
                 
-                if (data.eye_closed || data.phone_detected || data.multiple_people || data.looking_away) {
+                if (data.eye_closed || data.phone_detected || data.multiple_people || data.looking_away || data.posture_alert) {
                     if (this.alertSound && this.alertSound.startAlarm) this.alertSound.startAlarm();
                     document.body.classList.add('alert-shake');
                     // Flash deep red visually to accompany the alarm
@@ -634,11 +655,42 @@ class FocusMonitor {
                             toast.show();
                         }
                     }
+
+                    // Show posture overlay
+                    if (data.posture && data.posture !== 'straight') {
+                        const postureLabel = data.posture === 'slouching' ? '🔴 Slouching Detected — Sit Up Straight! (Fatigue Risk)' : '🟡 You are Leaning — Adjust Your Posture!';
+                        const postureEl = document.getElementById('postureStatusBadge');
+                        if (postureEl) {
+                            postureEl.textContent = postureLabel;
+                            postureEl.className = `posture-badge posture-${data.posture}`;
+                        }
+                        // Toast for posture only once per posture state change
+                        if (this._lastPosture !== data.posture) {
+                            this._lastPosture = data.posture;
+                            document.getElementById('alertMessage').textContent = postureLabel;
+                            const toast = new bootstrap.Toast(document.getElementById('alertToast'), {delay: 4000});
+                            toast.show();
+                        }
+                    } else {
+                        const postureEl = document.getElementById('postureStatusBadge');
+                        if (postureEl) {
+                            postureEl.textContent = '🟢 Posture: Good';
+                            postureEl.className = 'posture-badge posture-straight';
+                        }
+                        this._lastPosture = 'straight';
+                    }
                 } else {
                     if (this.alertSound && this.alertSound.stopAlarm) this.alertSound.stopAlarm();
                     document.body.classList.remove('alert-shake');
                     document.body.style.backgroundColor = '';
                     this._lastGazeDir = null;
+                    // Reset posture badge to good
+                    const postureEl = document.getElementById('postureStatusBadge');
+                    if (postureEl) {
+                        postureEl.textContent = '🟢 Posture: Good';
+                        postureEl.className = 'posture-badge posture-straight';
+                    }
+                    this._lastPosture = 'straight';
                 }
             } catch(e) {}
         }, 500);

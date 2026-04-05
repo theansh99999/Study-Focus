@@ -66,6 +66,16 @@ face_mesh = mp_face_mesh.FaceMesh(
     min_tracking_confidence=0.5
 )
 
+# MediaPipe Pose for posture detection
+mp_pose = mp.solutions.pose
+pose_detector = mp_pose.Pose(
+    static_image_mode=False,
+    model_complexity=0,          # 0 = fastest/lightest
+    smooth_landmarks=True,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
+
 # ----------------- Global monitoring state -----------------
 monitoring_active = False
 current_user = None
@@ -73,7 +83,7 @@ camera = None
 monitoring_thread = None
 camera_lock = threading.Lock()
 latest_processed_frame = None  # Holds the latest JPEG byte array for streaming
-current_alert_state = {'eye_closed': False, 'phone_detected': False, 'multiple_people': False, 'looking_away': False, 'gaze_direction': 'center'}
+current_alert_state = {'eye_closed': False, 'phone_detected': False, 'multiple_people': False, 'looking_away': False, 'gaze_direction': 'center', 'posture': 'straight', 'posture_alert': False}
 # Phone detection persistence config
 PHONE_CONF_THRESHOLD = 0.65   # YOLO confidence threshold
 MIN_PHONE_FRAMES = 4         # consecutive frames required to confirm phone
@@ -95,6 +105,14 @@ GAZE_ALERT_COOLDOWN = 10.0        # seconds between gaze distraction DB logs
 # Iris ratio thresholds (tuned for frontal webcam; adjust if needed)
 GAZE_LR_THRESHOLD = 0.38          # iris pos ratio < this -> looking left; > (1-this) -> right
 GAZE_UD_THRESHOLD = 0.38          # iris pos ratio < this -> looking up; > (1-this) -> down
+
+# Posture detection config
+POSTURE_LEAN_THRESHOLD = 0.12          # shoulder tilt ratio to detect leaning
+POSTURE_SLOUCH_NOSE_THRESHOLD = 0.05   # nose.y - shoulder_mid_y > this = slouching (negative = nose above shoulders = good)
+POSTURE_SHOULDER_LOW_THRESHOLD = 0.82  # shoulder midpoint Y ratio (>this means very low in frame = slouch/lying)
+POSTURE_SMOOTH_FRAMES = 7              # frames to smooth posture over
+POSTURE_SLOUCH_PERSIST = 5.0           # seconds of slouching before logging as event
+POSTURE_ALERT_COOLDOWN = 10.0          # seconds between posture_bad DB logs
 
 # ----------------- Helper functions -----------------
 def calculate_ear(landmarks, frame_shape):
@@ -176,6 +194,53 @@ def calculate_gaze_direction(landmarks, frame_shape):
             return 'center'
     except (IndexError, AttributeError):
         return 'center'
+
+def classify_posture(pose_landmarks, frame_shape):
+    """
+    Classify posture using MediaPipe Pose landmarks.
+    Landmarks used:
+      - 11: left_shoulder, 12: right_shoulder
+      - 0:  nose (head proxy)
+
+    Returns: 'straight', 'leaning', or 'slouching'
+    """
+    h, w = frame_shape[:2]
+    try:
+        lm = pose_landmarks.landmark
+
+        left_sh  = lm[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
+        right_sh = lm[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
+        nose     = lm[mp_pose.PoseLandmark.NOSE.value]
+
+        # Confidence gate: skip if landmarks not visible
+        if left_sh.visibility < 0.4 or right_sh.visibility < 0.4:
+            return 'straight'  # not enough data, don't false-alarm
+
+        # 1. Shoulder tilt (how much one shoulder is higher than other)
+        shoulder_width = abs(left_sh.x - right_sh.x)
+        if shoulder_width < 0.01:
+            return 'straight'  # person too far / not visible properly
+
+        shoulder_tilt = abs(left_sh.y - right_sh.y) / shoulder_width
+
+        # 2. Shoulder midpoint Y (normalized 0=top, 1=bottom)
+        shoulder_mid_y = (left_sh.y + right_sh.y) / 2.0
+
+        # 3. Head drop: positive if nose is BELOW shoulder midpoint (slouching/lying)
+        head_drop_ratio = nose.y - shoulder_mid_y  
+        # For a straight-sitting person, nose.y < shoulder_mid_y (nose is above shoulders)
+        # head_drop_ratio close to 0 or positive => slouching/lying
+
+        # Classification
+        if head_drop_ratio > POSTURE_SLOUCH_NOSE_THRESHOLD or shoulder_mid_y > POSTURE_SHOULDER_LOW_THRESHOLD:
+            return 'slouching'
+        elif shoulder_tilt > POSTURE_LEAN_THRESHOLD:
+            return 'leaning'
+        else:
+            return 'straight'
+
+    except (IndexError, AttributeError):
+        return 'straight'
 
 def detect_objects_with_yolo(frame):
     """
@@ -264,6 +329,12 @@ def monitor_user():
         gaze_direction = 'center'       # current smoothed direction
         gaze_history = []               # smooth over last N frames
         GAZE_SMOOTH_FRAMES = 5
+
+        # Posture detection state
+        posture_history = []            # last N posture classifications
+        current_posture = 'straight'
+        slouch_start = None             # when slouching began
+        last_posture_alert_time = 0     # last DB log for posture
 
         while monitoring_active and camera is not None:
             with camera_lock:
@@ -426,6 +497,46 @@ def monitor_user():
             else:
                 current_alert_state['multiple_people'] = False
 
+            # ----- Posture Detection (MediaPipe Pose) -----
+            try:
+                pose_results = pose_detector.process(rgb_frame)
+            except Exception:
+                pose_results = None
+
+            if pose_results and pose_results.pose_landmarks:
+                raw_posture = classify_posture(pose_results.pose_landmarks, frame.shape)
+            else:
+                raw_posture = 'straight'  # no person visible = no bad posture alarm
+
+            # Smooth posture over last N frames
+            from collections import Counter
+            posture_history.append(raw_posture)
+            if len(posture_history) > POSTURE_SMOOTH_FRAMES:
+                posture_history.pop(0)
+            current_posture = Counter(posture_history).most_common(1)[0][0]
+            current_alert_state['posture'] = current_posture
+
+            if current_posture == 'slouching':
+                current_alert_state['posture_alert'] = True
+                if slouch_start is None:
+                    slouch_start = current_time
+                slouch_duration = current_time - slouch_start
+                if slouch_duration >= POSTURE_SLOUCH_PERSIST:
+                    if (current_time - last_posture_alert_time) >= POSTURE_ALERT_COOLDOWN:
+                        ev = Event(user_id=current_user.id, session_id=session.id,
+                                   event_type='posture_bad', duration=slouch_duration)
+                        db.session.add(ev)
+                        db.session.commit()
+                        last_posture_alert_time = current_time
+                        slouch_start = current_time  # reset window
+                        print(f"[ALERT] posture_bad (slouching) logged: {slouch_duration:.2f}s")
+            elif current_posture == 'leaning':
+                current_alert_state['posture_alert'] = True
+                slouch_start = None  # leaning doesn't reset but also doesn't count for slouch timer
+            else:
+                current_alert_state['posture_alert'] = False
+                slouch_start = None
+
             # Draw bounding boxes for streaming
             if phone_detected:
                 x1, y1, w, h = phone_rect
@@ -451,6 +562,13 @@ def monitor_user():
                 else:
                     label_txt = f"Looking {dir_label}"
                 cv2.putText(frame, label_txt, (30, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            # Draw posture label on video
+            posture_colors = {'straight': (0, 220, 0), 'leaning': (0, 200, 255), 'slouching': (0, 0, 255)}
+            posture_icons  = {'straight': 'Posture: Good', 'leaning': 'Posture: Leaning!', 'slouching': 'Posture: Slouching!'}
+            p_color = posture_colors.get(current_posture, (200, 200, 200))
+            p_label = posture_icons.get(current_posture, current_posture.capitalize())
+            if current_posture != 'straight':
+                cv2.putText(frame, p_label, (30, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.8, p_color, 2)
                 
             # Encode frame for stream
             ret, jpeg = cv2.imencode('.jpg', frame)
@@ -588,6 +706,7 @@ def dashboard_data():
     phone_detected_events = len([e for e in events if e.event_type == 'phone_detected'])
     multiple_people_events = len([e for e in events if e.event_type == 'multiple_people'])
     looking_away_events = len([e for e in events if e.event_type == 'looking_away'])
+    posture_bad_events = len([e for e in events if e.event_type == 'posture_bad'])
     goal_progress = min(100, (total_focus_time / 60) / (current_user.daily_goal_minutes + 1e-9) * 100)
 
     return jsonify({
@@ -604,7 +723,8 @@ def dashboard_data():
             'eye_closed': eye_closed_events,
             'phone_detected': phone_detected_events,
             'multiple_people': multiple_people_events,
-            'looking_away': looking_away_events
+            'looking_away': looking_away_events,
+            'posture_bad': posture_bad_events
         },
         'monitoring_active': monitoring_active
     })
