@@ -1,179 +1,290 @@
-# 🎯 Focus Monitor - Productivity & Focus Monitoring App
+# 🎯 Study-Focus — AI-Powered Focus & Productivity Monitor
 
-A comprehensive Flask-based application that monitors your productivity and focus using **Computer Vision (OpenCV + Mediapipe + YOLO)** to detect distractions like **eye closure** and **phone usage**.
+> A **real-time computer vision** application that watches your study habits so you can build better ones. Detects drowsiness, phone usage, posture problems, gaze direction, and more — all through your webcam.
 
-⚠️ **Note:** Some features are currently under active development including multi-person detection and other advance features.
+<br/>
+
+## 🧠 What Is This?
+
+**Study-Focus** is a Flask-based web application that uses your webcam and a combination of **YOLOv8**, **MediaPipe FaceMesh**, and **MediaPipe Pose** to monitor you while you study. It logs distraction events, tracks your focus sessions, generates analytics, and exports reports — all from your browser.
+
+This project is **locally run** — no cloud, no signup, no data leaves your machine.
 
 ---
 
 ## ✨ Features
 
+### 👁️ Real-Time Distraction Detection
+
+| Detection Type | Technology | How It Works |
+|---|---|---|
+| **Eye Closure / Drowsiness** | MediaPipe FaceMesh + EAR | Calculates Eye Aspect Ratio (EAR); alerts if eyes closed > threshold (default 3s) |
+| **Phone Detection** | YOLOv8 (COCO) | Detects `cell phone` class; requires ≥4 consecutive frames + min bbox area to reduce false positives |
+| **Multiple People** | YOLOv8 (COCO) | Detects `person` class count > 1; useful for exam/study room monitoring |
+| **Gaze / Looking Away** | MediaPipe FaceMesh Iris | Tracks iris position ratio within eye socket; warns immediately, logs distraction after 10s |
+| **Posture Detection** | MediaPipe Pose | Classifies posture as `straight`, `leaning`, or `slouching` using shoulder tilt + nose-shoulder ratio |
+
+### 📊 Analytics Dashboard
+
+- **Real-time stats**: Focus time, distraction time, and goal progress (refreshes every 5 seconds)
+- **Interactive Charts** (Chart.js):
+  - Focus vs Distraction doughnut chart
+  - Event breakdown by type (eye_closed, phone_detected, multiple_people, looking_away, posture_bad)
+  - User comparison leaderboard (bar chart)
+- **Recent Events Table**: Last 10 events with type, timestamp, and duration
+- **Daily Goal Progress**: Customizable target (default: 120 mins) with visual progress bar
+
+### 📹 Live Video Feed
+
+- Real-time annotated webcam stream at `/video_feed`
+- Bounding boxes drawn on detected phones and people
+- On-frame text labels for eye closure, gaze direction, and posture state
+- Camera feed is mirrored (flipped horizontally) for natural display
+
 ### 🔐 User Management
-- Username-based login (no password required)
-- Automatic user profile creation
-- Data reset functionality for existing users
 
-### 👁️ Core Monitoring (OpenCV + Mediapipe + YOLO)
-- **Eye Closure Detection** → Alerts when eyes remain closed for more than a threshold  
-- **Phone Detection** → Detects phone usage in real-time  
-- **Multi-person Detection** → Detects multiple people in frame  
-- **Real-time Event Logging** → Records all events with timestamps and user info
-- **Face Direction Tracking** → Detects if the user is looking away from the screen
-### 🔐 User Management
-- Username-based login  
-- **User Registration system (in progress)**  
-- Automatic user profile creation  
-- Data reset functionality  
-### 📊 Distraction Categories
-- Eye Closed Too Long 👀 (Drowsiness & fatigue)
-- Phone Usage 📱 (Mobile distractions)
-- Category-wise statistics & breakdown in dashboard  
+- **Username-based login** — no password required
+- Auto-creates new user profile if username doesn't exist
+- Per-user settings: daily goal & eye closure threshold
+- Data reset option to clear all sessions and events
 
-### 🎨 UI/UX Features
-- Improved modern dashboard UI *(currently being enhanced)*  
-- Dark/Light mode toggle  
-- Real-time dashboard with live alerts  
-- Interactive charts (Line, Pie, Progress bar)  
-- Goal tracking visualization  
-- Export functionality: CSV & PDF  
-- Responsive design   
+### ⚙️ Detection Tuning (Configurable in `app.py`)
 
-### 🚀 Advanced Features
-- Session tracking with analytics  
-- Multi-user comparison dashboard  
-- Customizable thresholds for eye closure  
-- Dual alerts → Audio beep + Visual popup  
-- Real-time updates (dashboard refreshes every 5s)
-- Improved phone detection accuracy using YOLO  
-- Multi-person detection in frame 
-- Posture Detection
-## 🚧 Current Enhancements (Work in Progress)
-- UI redesign for a more modern and clean dashboard  
-- User registration & authentication system  
-- Performance optimization for real-time monitoring
-- Yawning / Drowsiness Detection
-- Hand Activity Tracking(using phone but not in frame)
-- Sound-based Distraction Detection
-- Focus Score System
-- Smart Alerts (Not annoying)
+| Parameter | Default | Description |
+|---|---|---|
+| `PHONE_CONF_THRESHOLD` | `0.65` | Minimum YOLO confidence to count as phone |
+| `MIN_PHONE_FRAMES` | `4` | Consecutive frames needed to confirm phone |
+| `MIN_PHONE_AREA` | `1500` | Minimum bounding box area (pixels²) |
+| `EAR_DYNAMIC_MULTIPLIER` | `0.7` | Fraction of baseline EAR below which eyes = closed |
+| `BASELINE_FRAMES` | `50` | Frames used to calibrate personal EAR baseline |
+| `GAZE_DISTRACTION_THRESHOLD` | `10.0s` | Seconds looking away before logging as distraction |
+| `POSTURE_SLOUCH_PERSIST` | `5.0s` | Seconds of slouching before logging as event |
+
+### 📤 Data Export
+
+- **CSV** — Session-level data (focus time, distraction time per session)
+- **PDF** — Summary report with session details via ReportLab
+
 ---
+
 ## 🛠️ Tech Stack
-- **Backend:** Flask (Python)  
-- **Frontend:** HTML5, CSS3, JavaScript, Bootstrap 5  
-- **Charts:** Chart.js  
-- **Computer Vision:** OpenCV + Mediapipe + YOLO  
-- **Database:** SQLite  
-- **Others:** Web Audio API for alerts, Responsive Design  
+
+| Layer | Technology |
+|---|---|
+| **Backend** | Python 3.10, Flask 2.3 |
+| **Database** | SQLite (via Flask-SQLAlchemy) |
+| **Computer Vision** | OpenCV, MediaPipe (FaceMesh + Pose), Ultralytics YOLOv8 |
+| **Frontend** | HTML5, CSS3 (custom), Vanilla JavaScript |
+| **Charts** | Chart.js |
+| **ML Models** | `yolov8n.pt` (default), `yolov8s.pt` (optional, more accurate) |
+| **Export** | Pandas (CSV), ReportLab (PDF) |
+| **Containerization** | Docker + Docker Compose |
 
 ---
 
-## Getting Started
-- Launch the app and enter your username (no password needed)  
-- Grant camera permissions when prompted by your browser  
-- Configure settings like daily goal and eye closure threshold  
-- Click **“Start Monitoring”** to begin focus tracking  
+## 📁 Project Structure
 
-## Monitoring Process
-- The app will continuously monitor your webcam feed  
-- **Eye Closure**: If your eyes stay closed for longer than the threshold (default 3 seconds), you’ll receive an alert  
-- **Phone Detection**: If a phone appears in the camera frame, an immediate alert is triggered  
-- All events are logged with precise timestamps for later analysis  
-
-## Dashboard Features
-- **Real-time Stats**: Focus time, distraction time, and alert counts  
-- **Goal Progress**: Visual progress bar showing daily goal completion  
-- **Interactive Charts**:  
-  - Focus vs Distraction time (doughnut chart)  
-  - Distraction type breakdown (pie chart)  
-  - User comparison (bar chart)  
-- **Recent Events Table**: Chronological list of all monitoring events  
-- **Export Options**: Download your data as CSV or PDF reports  
-
-## Settings & Customization
-- **Daily Goal**: Set your target focus time (default: 120 minutes)  
-- **Eye Closure Threshold**: Adjust sensitivity (default: 3.0 seconds)  
-- **Theme**: Toggle between light/dark modes or use auto-detection  
-- **Data Management**: Reset all personal data if needed  
-
-## Project Structure
 ```
-focus-monitor/
-├── app.py # Main Flask application
-├── requirements.txt # Python dependencies
-├── focus_monitor.db # SQLite database (auto-created)
+Study-Focus/
+├── app.py                  # Main Flask app — all routes, detection logic, DB models
+├── requirements.txt        # Python dependencies
+├── Dockerfile              # Docker image definition (python:3.10-slim)
+├── docker-compose.yml      # Local Docker Compose setup
+├── yolov8n.pt              # YOLOv8 nano model (default, faster)
+├── yolov8s.pt              # YOLOv8 small model (optional, more accurate)
+├── test_yolo.py            # Quick YOLO model test script
+├── future_plan.txt         # Feature roadmap & ideas
+├── instance/
+│   └── focus_monitor.db    # SQLite database (auto-created on first run)
 ├── templates/
-│ └── index.html # Main dashboard template
-├── static/
-│ ├── css/
-│ │ └── style.css # Custom styles and themes
-│ └── js/
-│ └── app.js # Frontend JavaScript logic
-└── README.md # This file
+│   └── index.html          # Main dashboard (single-page app)
+└── static/
+    ├── css/
+    │   └── style.css       # Custom styles & dark/light theme
+    └── js/
+        └── app.js          # Frontend logic (API calls, charts, alerts)
 ```
 
-## Database Schema
+---
 
-### Users Table
-- **id**: Primary key  
-- **username**: Unique username  
-- **created_at**: Account creation timestamp  
-- **daily_goal_minutes**: Personal daily goal  
-- **eye_closure_threshold**: Custom threshold setting  
+## 🗄️ Database Schema
 
-### Sessions Table
-- **id**: Primary key  
-- **user_id**: Foreign key to users  
-- **start_time**: Session start timestamp  
-- **end_time**: Session end timestamp  
-- **total_duration**: Total session time in seconds  
-- **focus_duration**: Productive time in seconds  
-- **distraction_duration**: Distracted time in seconds  
-- **is_active**: Boolean for active sessions  
+### `user` Table
+| Column | Type | Description |
+|---|---|---|
+| `id` | Integer (PK) | Auto-increment |
+| `username` | String(80) | Unique username |
+| `created_at` | DateTime | Account creation time |
+| `daily_goal_minutes` | Integer | Personal focus goal (default: 120) |
+| `eye_closure_threshold` | Float | Seconds before eye-close alert (default: 3.0) |
 
-### Events Table
-- **id**: Primary key  
-- **user_id**: Foreign key to users  
-- **session_id**: Foreign key to sessions  
-- **timestamp**: Event occurrence time  
-- **event_type**: `eye_closed` or `phone_detected`  
-- **duration**: Event duration in seconds  
+### `session` Table
+| Column | Type | Description |
+|---|---|---|
+| `id` | Integer (PK) | Auto-increment |
+| `user_id` | FK → user | Owner of session |
+| `start_time` / `end_time` | DateTime | Session window |
+| `total_duration` | Integer | Seconds |
+| `focus_duration` | Integer | Seconds (total − distraction) |
+| `distraction_duration` | Integer | Sum of all event durations in seconds |
+| `is_active` | Boolean | True while monitoring is running |
 
-## API Endpoints
-- **GET /** → Main dashboard page  
-- **POST /api/login** → User authentication  
-- **POST /api/start_monitoring** → Begin camera monitoring  
-- **POST /api/stop_monitoring** → End monitoring session  
-- **GET /api/dashboard_data** → Fetch real-time dashboard data  
-- **GET/POST /api/settings** → User settings management  
-- **POST /api/reset_user_data** → Clear all user data  
-- **GET /api/export_data/<format>** → Export data as CSV or PDF  
-- **GET /api/comparison_data** → Multi-user comparison data  
+### `event` Table
+| Column | Type | Description |
+|---|---|---|
+| `id` | Integer (PK) | Auto-increment |
+| `user_id` | FK → user | Owner |
+| `session_id` | FK → session | Parent session |
+| `timestamp` | DateTime | When event occurred |
+| `event_type` | String(50) | `eye_closed` / `phone_detected` / `multiple_people` / `looking_away` / `posture_bad` |
+| `duration` | Float | Duration in seconds |
 
-## Browser Compatibility
-- **Chrome/Chromium**: Full support (recommended)  
-- **Firefox**: Full support  
-- **Safari**: Full support (macOS)  
-- **Edge**: Full support  
+---
 
-⚠️ Note: Camera access requires **HTTPS** in production environments.  
+## 🔌 API Endpoints
 
-## Troubleshooting
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/` | Render main dashboard |
+| `GET` | `/video_feed` | MJPEG live annotated camera stream |
+| `GET` | `/api/status` | Current alert state (JSON) |
+| `GET` | `/api/users` | List all users |
+| `POST` | `/api/login` | Login / auto-create user |
+| `POST` | `/api/logout` | Logout and stop monitoring |
+| `POST` | `/api/start_monitoring` | Start webcam + detection thread |
+| `POST` | `/api/stop_monitoring` | Stop monitoring and save session |
+| `GET` | `/api/dashboard_data` | Today's stats, events, goal progress |
+| `GET/POST` | `/api/settings` | Get or update user settings |
+| `POST` | `/api/reset_user_data` | Delete all user sessions + events |
+| `GET` | `/api/export_data/<format>` | Export as `csv` or `pdf` |
+| `GET` | `/api/comparison_data` | All-user leaderboard data |
 
-### Camera Issues
-- Ensure your camera is not being used by other applications  
-- Grant camera permissions when prompted  
-- Try refreshing the page if camera access fails  
+---
 
-### Performance
-- Close other camera-using applications  
-- Ensure good lighting for better face detection  
-- Consider adjusting detection thresholds if getting false positives  
+## 🚀 Getting Started (Local)
 
-### Data Export
-- Large datasets may take a moment to generate  
-- PDF reports include charts and require matplotlib  
-- CSV exports work with any spreadsheet application  
+### Prerequisites
+
+- Python 3.10
+- Webcam
+- pip
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/theansh99999/Study-Focus.git
+cd Study-Focus
+```
+
+### 2. Create virtual environment
+
+```bash
+python -m venv venv
+
+# Windows
+venv\Scripts\activate
+
+# Mac/Linux
+source venv/bin/activate
+```
+
+### 3. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+> **Note for Windows:** Use `mediapipe` instead of `mediapipe-silicon` in `requirements.txt` if you're not on Apple Silicon.
+
+### 4. Run the app
+
+```bash
+python app.py
+```
+
+Open your browser → `http://localhost:5000`
+
+---
 
 
-## 👨‍💻 Created By
+## 🖥️ How to Use
+
+1. **Login** — Enter your username (auto-creates profile if new)
+2. **Grant Camera Permission** — Browser will ask on first start
+3. **Configure Settings** *(optional)*:
+   - Set your daily focus goal (minutes)
+   - Adjust eye closure alert threshold (seconds)
+4. **Click "Start Monitoring"** — Camera feed activates and detection begins
+5. **Watch the Dashboard** — Stats update live every 5 seconds
+6. **Stop Monitoring** — Session is saved and durations calculated
+7. **Export Data** — Download CSV or PDF report from dashboard
+
+---
+
+## 🔍 Detection Details
+
+### EAR (Eye Aspect Ratio)
+The app calibrates a personal baseline EAR over the first 50 frames, then uses `baseline × 0.7` as the dynamic threshold. This adapts to each user's natural eye openness.
+
+### Gaze Tracking
+Uses MediaPipe's iris refinement landmarks (468–477). Iris horizontal position within eye socket is compared against configurable L/R thresholds (`0.38`). If gaze is off-center, a visual warning appears immediately; if sustained for >10s, it's logged as a `looking_away` distraction event.
+
+### Posture Classification
+Uses shoulder landmarks (11, 12) and nose (0) from MediaPipe Pose:
+- **Slouching**: Nose Y close to or below shoulder midpoint Y, or shoulders very low in frame
+- **Leaning**: High shoulder tilt ratio (one shoulder significantly higher than other)
+- **Straight**: Normal posture
+
+A 7-frame majority vote smooths out transient misclassifications.
+
+---
+
+## 🐛 Troubleshooting
+
+| Problem | Solution |
+|---|---|
+| Camera not found | Make sure no other app is using the webcam; try refreshing |
+| YOLO model not loading | Ensure `yolov8n.pt` is in the project root directory |
+| `mediapipe-silicon` install fails | Replace with `mediapipe` in `requirements.txt` (Windows/Linux) |
+| High CPU usage | YOLO runs at 640px; reduce `imgsz` in `detect_objects_with_yolo()` |
+| False eye-closure alerts | Increase `BASELINE_FRAMES` or raise `EAR_DYNAMIC_MULTIPLIER` |
+| Too many gaze alerts | Increase `GAZE_LR_THRESHOLD` or `GAZE_DISTRACTION_THRESHOLD` |
+
+---
+
+## 🚧 Planned Features (Roadmap)
+
+- [ ] **Yawning / Drowsiness Detection** — Mouth open detection via FaceMesh
+- [ ] **Hand Activity Tracking** — Hand near face = phone probability
+- [ ] **Sound-based Distraction** — Mic input for talking/noise detection
+- [ ] **Focus Score System** — Weighted composite score (eye, phone, gaze, posture)
+- [ ] **Smart Alerts** — Tiered alert system (10s = ignore, 30s = warn, 60s = strong)
+- [ ] **Break Recommendation** — Notify after 40+ min continuous focus (Pomodoro-style)
+- [ ] **Tab / App Switching Detection** — `visibilitychange` API integration
+- [ ] **Peak Focus Hours Analytics** — Identify your best study time windows
+- [ ] **User Authentication** — Password-protected accounts
+
+---
+
+## 🌐 Browser Compatibility
+
+| Browser | Support |
+|---|---|
+| Chrome / Chromium | ✅ Full (recommended) |
+| Firefox | ✅ Full |
+| Edge | ✅ Full |
+| Safari (macOS) | ✅ Full |
+
+> ⚠️ Camera access over HTTP works on `localhost`. For any networked deployment, **HTTPS is required** (browser security policy).
+
+---
+
+## 👨‍💻 Author
+
 **Ansh Kumar Rai**
+Connect me on Linkedin https://www.linkedin.com/in/anshkumarrai/
+---
+
+## 📄 License
+
+This project is for educational and personal use. Feel free to fork and build on it.
