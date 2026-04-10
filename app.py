@@ -1,4 +1,4 @@
-# app.py (Full-featured: YOLO phone detection + MediaPipe EAR eye-closure + Flask dashboard/export)
+
 from flask import Flask, render_template, request, jsonify, send_file, Response
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
