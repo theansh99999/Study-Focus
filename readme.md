@@ -1,5 +1,7 @@
 # 🎯 Study-Focus — AI-Powered Focus & Productivity Monitor
-
+![Python](https://img.shields.io/badge/Python-3.10-blue)
+![Flask](https://img.shields.io/badge/Flask-2.3-green)
+![Docker](https://img.shields.io/badge/Docker-Enabled-blue)
 > A **real-time computer vision** application that watches your study habits so you can build better ones. Detects drowsiness, phone usage, posture problems, gaze direction, and more — all through your webcam.
 
 <br/>
@@ -278,6 +280,8 @@ A 7-frame majority vote smooths out transient misclassifications.
 > ⚠️ Camera access over HTTP works on `localhost`. For any networked deployment, **HTTPS is required** (browser security policy).
 
 ---
+## Demo link
+Youtube link https://youtu.be/WuDIWtNUqpI?si=XWx9Vu74j8ddw-n4
 
 ## 👨‍💻 Author
 
